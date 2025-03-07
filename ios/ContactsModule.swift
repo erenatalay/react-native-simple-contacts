@@ -4,135 +4,84 @@ import Contacts
 @objc(ContactsModule)
 class ContactsModule: NSObject {
     
+    // Store contactStore as a property to avoid creating it multiple times
+    private let contactStore = CNContactStore()
+    
     @objc
     func getContacts(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        let contactStore = CNContactStore()
-        let keysToFetch: [CNKeyDescriptor] = [
-            CNContactIdentifierKey as CNKeyDescriptor,
-            CNContactGivenNameKey as CNKeyDescriptor,
-            CNContactFamilyNameKey as CNKeyDescriptor,
-            CNContactMiddleNameKey as CNKeyDescriptor,
-            CNContactEmailAddressesKey as CNKeyDescriptor,
-            CNContactPhoneNumbersKey as CNKeyDescriptor,
-            CNContactPostalAddressesKey as CNKeyDescriptor,
-            CNContactOrganizationNameKey as CNKeyDescriptor,
-            CNContactDepartmentNameKey as CNKeyDescriptor,
-            CNContactJobTitleKey as CNKeyDescriptor,
-            CNContactNoteKey as CNKeyDescriptor,
-            CNContactImageDataAvailableKey as CNKeyDescriptor,
-            CNContactThumbnailImageDataKey as CNKeyDescriptor,
-            CNContactInstantMessageAddressesKey as CNKeyDescriptor,
-            CNContactUrlAddressesKey as CNKeyDescriptor,
-            CNContactBirthdayKey as CNKeyDescriptor,
-            CNContactNamePrefixKey as CNKeyDescriptor,
-            CNContactNameSuffixKey as CNKeyDescriptor
-        ]
-        
-        contactStore.requestAccess(for: .contacts) { (granted, error) in
-            if !granted {
-                reject("permission_denied", "Permission to access contacts was denied", error)
-                return
-            }
+        // Move to background thread to avoid UI blocking
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
             
-            do {
-                let containers = try contactStore.containers(matching: nil)
-                var results = [[String: Any]]()
-                
-                for container in containers {
-                    let fetchPredicate = CNContact.predicateForContactsInContainer(withIdentifier: container.identifier)
-                    
-                    do {
-                        let containerResults = try contactStore.unifiedContacts(matching: fetchPredicate, keysToFetch: keysToFetch)
-                        
-                        for contact in containerResults {
-                            var result = [String: Any]()
-                            
-                            result["recordID"] = contact.identifier
-                            result["company"] = contact.organizationName
-                            result["displayName"] = "\(contact.givenName) \(contact.familyName)"
-                            result["familyName"] = contact.familyName
-                            result["givenName"] = contact.givenName
-                            result["middleName"] = contact.middleName
-                            result["jobTitle"] = contact.jobTitle
-                            result["hasThumbnail"] = contact.imageDataAvailable
-                            result["prefix"] = contact.namePrefix
-                            result["suffix"] = contact.nameSuffix
-                            result["department"] = contact.departmentName
-                            result["note"] = contact.note
-                            
-                            // Email addresses
-                            var emailAddresses = [[String: String]]()
-                            for email in contact.emailAddresses {
-                                emailAddresses.append([
-                                    "label": CNLabeledValue.localizedString(forLabel: email.label ?? ""),
-                                    "email": email.value as String
-                                ])
-                            }
-                            result["emailAddresses"] = emailAddresses
-                            
-                            // Phone numbers
-                            var phoneNumbers = [[String: String]]()
-                            for phone in contact.phoneNumbers {
-                                phoneNumbers.append([
-                                    "label": CNLabeledValue.localizedString(forLabel: phone.label ?? ""),
-                                    "number": phone.value.stringValue
-                                ])
-                            }
-                            result["phoneNumbers"] = phoneNumbers
-                            
-                            // Postal addresses
-                            var postalAddresses = [[String: String]]()
-                            for address in contact.postalAddresses {
-                                postalAddresses.append([
-                                    "label": CNLabeledValue.localizedString(forLabel: address.label ?? ""),
-                                    "street": address.value.street,
-                                    "city": address.value.city,
-                                    "state": address.value.state,
-                                    "postCode": address.value.postalCode,
-                                    "country": address.value.country
-                                ])
-                            }
-                            result["postalAddresses"] = postalAddresses
-                            
-                            // IM addresses
-                            var imAddresses = [[String: String]]()
-                            for im in contact.instantMessageAddresses {
-                                imAddresses.append([
-                                    "service": CNLabeledValue.localizedString(forLabel: im.label ?? ""),
-                                    "username": im.value.username
-                                ])
-                            }
-                            result["imAddresses"] = imAddresses
-                            
-                            // URL addresses
-                            var urlAddresses = [[String: String]]()
-                            for url in contact.urlAddresses {
-                                urlAddresses.append([
-                                    "label": CNLabeledValue.localizedString(forLabel: url.label ?? ""),
-                                    "url": url.value as String
-                                ])
-                            }
-                            result["urlAddresses"] = urlAddresses
-                            
-                            // Birthday
-                            if let contactBirthday = contact.birthday {
-                                result["birthday"] = [
-                                    "year": contactBirthday.year ?? 0,
-                                    "month": contactBirthday.month,
-                                    "day": contactBirthday.day
-                                ]
-                            }
-                            
-                            results.append(result)
-                        }
-                    } catch {
-                        reject("fetch_error", "Failed to fetch contacts for container: \(error.localizedDescription)", error)
+            // Only fetch the keys we actually need
+            let keysToFetch: [CNKeyDescriptor] = [
+                CNContactIdentifierKey as CNKeyDescriptor,
+                CNContactGivenNameKey as CNKeyDescriptor,
+                CNContactFamilyNameKey as CNKeyDescriptor,
+                CNContactPhoneNumbersKey as CNKeyDescriptor,
+                CNContactEmailAddressesKey as CNKeyDescriptor
+            ]
+            
+            self.contactStore.requestAccess(for: .contacts) { (granted, error) in
+                if !granted {
+                    DispatchQueue.main.async {
+                        reject("permission_denied", "Permission to access contacts was denied", error)
                     }
+                    return
                 }
                 
-                resolve(results)
-            } catch {
-                reject("fetch_failed", "Failed to fetch contacts", error)
+                do {
+                    let request = CNContactFetchRequest(keysToFetch: keysToFetch)
+                    var results = [[String: Any]]()
+                    
+                    // Batch process contacts
+                    try self.contactStore.enumerateContacts(with: request) { (contact, stopPointer) in
+                        var result = [String: Any]()
+                        
+                        // Essential info only
+                        result["recordID"] = contact.identifier
+                        
+                        // Better display name handling
+                        let firstName = contact.givenName
+                        let lastName = contact.familyName
+                        let fullName = [firstName, lastName].filter { !$0.isEmpty }.joined(separator: " ")
+                        result["displayName"] = fullName.isEmpty ? "No Name" : fullName
+                        
+                        result["givenName"] = firstName
+                        result["familyName"] = lastName
+                        
+                        // Phone numbers
+                        var phoneNumbers = [[String: String]]()
+                        for phone in contact.phoneNumbers {
+                            phoneNumbers.append([
+                                "label": CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: phone.label ?? ""),
+                                "number": phone.value.stringValue
+                            ])
+                        }
+                        result["phoneNumbers"] = phoneNumbers
+                        
+                        // Email addresses
+                        var emailAddresses = [[String: String]]()
+                        for email in contact.emailAddresses {
+                            emailAddresses.append([
+                                "label": email.label != nil ? CNLabeledValue<NSString>.localizedString(forLabel: email.label!) : "other",
+                                "email": email.value as String
+                            ])
+                        }
+                        result["emailAddresses"] = emailAddresses
+                        
+                        results.append(result)
+                    }
+                    
+                    // Return to main thread to resolve
+                    DispatchQueue.main.async {
+                        resolve(results)
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        reject("fetch_failed", "Failed to fetch contacts: \(error.localizedDescription)", error)
+                    }
+                }
             }
         }
     }
@@ -153,15 +102,17 @@ class ContactsModule: NSObject {
     
     @objc
     func requestPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        let contactStore = CNContactStore()
-        
         contactStore.requestAccess(for: .contacts) { (granted, error) in
             if let error = error {
-                reject("permission_error", "Error requesting contacts permission: \(error.localizedDescription)", error)
+                DispatchQueue.main.async {
+                    reject("permission_error", "Error requesting contacts permission: \(error.localizedDescription)", error)
+                }
                 return
             }
             
-            resolve(granted)
+            DispatchQueue.main.async {
+                resolve(granted)
+            }
         }
     }
     
