@@ -10461,9 +10461,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"react-native-simple-contacts@workspace:.":
+"react-native-simple-contact@workspace:.":
   version: 0.0.0-use.local
-  resolution: "react-native-simple-contacts@workspace:."
+  resolution: "react-native-simple-contact@workspace:."
   dependencies:
     "@react-native/eslint-config": ^0.72.2
     "@release-it/conventional-changelog": ^5.0.0

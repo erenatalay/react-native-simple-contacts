@@ -1,5 +1,5 @@
 
-# react-native-simple-contacts
+# react-native-simple-contact
 
 A simple React Native module to fetch contacts from the user's device with permission handling. This module provides basic functions to request and check permissions, and retrieve contact information, including names and phone numbers.
 
@@ -8,14 +8,14 @@ A simple React Native module to fetch contacts from the user's device with permi
 ### 1. Install the package
 
 ```bash
-npm install react-native-simple-contacts
+npm install react-native-simple-contact
 ```
 
 ### 2. Link the package (for older versions of React Native)
 If you're using React Native version 0.59 or earlier, you'll need to link the package manually:
 
 ```bash
-react-native link react-native-simple-contacts
+react-native link react-native-simple-contact
 ```
 
 For newer versions of React Native, auto-linking should work.
@@ -40,7 +40,7 @@ For Android, ensure that the correct permissions are set in your `AndroidManifes
 ### Importing the module
 
 ```tsx
-import { requestPermission, checkPermission, getContacts, Contact } from "react-native-simple-contacts";
+import { requestPermission, checkPermission, getContacts, Contact } from "react-native-simple-contact";
 ```
 
 ### Example Usage
@@ -50,7 +50,7 @@ Below is an example usage that demonstrates how to request permission, check if 
 ```tsx
 import React, { useEffect } from "react";
 import { Button, Linking, SafeAreaView, StyleSheet, Text, View } from "react-native";
-import { requestPermission, checkPermission, getContacts, Contact } from "react-native-simple-contacts";
+import { requestPermission, checkPermission, getContacts, Contact } from "react-native-simple-contact";
 
 const App = (): JSX.Element => {
   const [contacts, setContacts] = React.useState<Contact[]>([]);
