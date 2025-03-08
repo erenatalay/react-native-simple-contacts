@@ -359,9 +359,13 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
 
     @ReactMethod
     fun checkPermission(promise: Promise) {
-        promise.resolve(hasPermission())
+        try {
+            val hasPermission = hasPermission()
+            promise.resolve(hasPermission)
+        } catch (e: Exception) {
+            promise.reject("check_permission_error", e.message)
+        }
     }
-
     @ReactMethod
     fun requestPermission(promise: Promise) {
         this.permissionPromise = promise
@@ -371,18 +375,24 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
             return
         }
         
-        if (currentActivity != null) {
+        val activity = reactContext.currentActivity
+        if (activity == null) {
+            promise.reject("activity_error", "Activity is null")
+            return
+        }
+        
+        if (activity is PermissionAwareActivity) {
             try {
-                (currentActivity as PermissionAwareActivity).requestPermissions(
-                        arrayOf(Manifest.permission.READ_CONTACTS),
-                        PERMISSION_REQUEST_CODE,
-                        this
+                activity.requestPermissions(
+                    arrayOf(Manifest.permission.READ_CONTACTS),
+                    PERMISSION_REQUEST_CODE,
+                    this
                 )
             } catch (e: Exception) {
-                promise.reject("permission_error", "Error requesting permission: " + e.message)
+                promise.reject("request_permission_error", e.message)
             }
         } else {
-            promise.reject("activity_null", "Activity is null")
+            promise.reject("activity_error", "Activity is not PermissionAwareActivity")
         }
     }
 
