@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ContentResolver
 import android.content.pm.PackageManager
 import android.database.Cursor
+import android.os.Build
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds
 import androidx.core.content.ContextCompat
@@ -30,61 +31,84 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
     private var permissionRequested: Boolean = false
     
     companion object {
-        private const val PERMISSION_REQUEST_CODE = 1
+        private const val CONTACTS_PERMISSION_REQUEST_CODE = 1
     }
 
     override fun getName(): String {
         return "ContactsModule"
     }
-
-    /**
-     * Check if the app has permission to read contacts
-     * @param promise Promise to resolve with the permission status
-     */
-    @ReactMethod
-    fun checkPermission(promise: Promise) {
-        // Return the current permission state
-        promise.resolve(hasPermission())
+    
+    // Implement the abstract method from PermissionListener interface
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray): Boolean {
+        if (requestCode == CONTACTS_PERMISSION_REQUEST_CODE) {
+            val isGranted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+            
+            // Handle the permission promise if it exists
+            permissionPromise?.let { promise ->
+                promise.resolve(isGranted)
+                permissionPromise = null
+            }
+            
+            // If we have a pending getContacts promise, handle it
+            getContactsPromise?.let { promise ->
+                if (isGranted) {
+                    fetchContacts(promise)
+                } else {
+                    promise.reject("permission_denied", "Contacts permission was denied")
+                }
+                getContactsPromise = null
+            }
+            
+            return true
+        }
+        return false
     }
 
-    /**
-     * Request permission to read contacts
-     * @param promise Promise to resolve with the permission result
-     */
     @ReactMethod
-    fun requestPermission(promise: Promise) {
-        this.permissionPromise = promise
-        
-        if (hasPermission()) {
+    fun checkPermission(promise: Promise) {
+        val activity = currentActivity
+        if (activity == null) {
+            promise.reject("ERROR", "Activity is null")
+            return
+        }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
             promise.resolve(true)
             return
         }
-        
+
+        val isGranted = ActivityCompat.checkSelfPermission(activity, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+        promise.resolve(isGranted)
+    }
+
+    @ReactMethod
+    fun requestPermission(promise: Promise) {
         val activity = currentActivity
-        if (activity != null) {
-            try {
-                if (activity is PermissionAwareActivity) {
-                    // Only set permissionRequested flag once we're sure we can request permissions
-                    this.permissionRequested = true
-                    
-                    // Request permissions
-                    val permissionAwareActivity = activity as PermissionAwareActivity
-                    permissionAwareActivity.requestPermissions(
-                            arrayOf(Manifest.permission.READ_CONTACTS),
-                            PERMISSION_REQUEST_CODE,
-                            this
-                    )
-                } else {
-                    // If activity is not PermissionAwareActivity, we cannot request permission
-                    promise.reject("permission_error", "Activity does not support permission requests")
-                }
-            } catch (e: Exception) {
-                promise.reject("permission_error", "Error requesting permission: " + e.message)
-                this.permissionRequested = false
-            }
-        } else {
-            promise.reject("activity_null", "Activity is null")
+        if (activity == null) {
+            promise.reject("ERROR", "Activity is null")
+            return
         }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            promise.resolve(true)
+            return
+        }
+
+        if (ActivityCompat.checkSelfPermission(activity, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+            promise.resolve(true)
+        } else {
+            ActivityCompat.requestPermissions(
+                activity,
+                arrayOf(Manifest.permission.READ_CONTACTS),
+                CONTACTS_PERMISSION_REQUEST_CODE
+            )
+            promise.resolve(false)
+        }
+    }
+
+    private fun hasPermission(): Boolean {
+        val activity = currentActivity ?: return false
+        return ContextCompat.checkSelfPermission(activity, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
     }
 
     @ReactMethod
@@ -102,7 +126,7 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                 
                 activity.requestPermissions(
                         arrayOf(Manifest.permission.READ_CONTACTS),
-                        PERMISSION_REQUEST_CODE,
+                        CONTACTS_PERMISSION_REQUEST_CODE,
                         this
                 )
             } else {
@@ -426,40 +450,5 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
         } catch (e: Exception) {
             promise.reject("fetch_error", "Could not fetch contacts: " + e.message)
         }
-    }
-
-    private fun hasPermission(): Boolean {
-        return PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(
-                reactContext,
-                Manifest.permission.READ_CONTACTS
-        )
-    }
-
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray): Boolean {
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
-            
-            // Handle permission promise if it exists
-            if (permissionPromise != null) {
-                permissionPromise!!.resolve(granted)
-                permissionPromise = null
-            }
-            
-            // If we have a pending getContacts promise, handle it based on permission result
-            if (getContactsPromise != null) {
-                if (granted) {
-                    // We have permission now, so fetch contacts
-                    fetchContacts(getContactsPromise!!)
-                } else {
-                    // Permission denied, reject the promise
-                    getContactsPromise!!.reject("permission_denied", "Contacts permission not granted")
-                }
-                getContactsPromise = null
-            }
-            
-            permissionRequested = false
-            return true
-        }
-        return false
     }
 }
