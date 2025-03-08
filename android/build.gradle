@@ -44,7 +44,7 @@ def supportsNamespace() {
 
 android {
   if (supportsNamespace()) {
-    namespace "com.simpleshake"
+    namespace "com.simplecontacts"
 
     sourceSets {
       main {

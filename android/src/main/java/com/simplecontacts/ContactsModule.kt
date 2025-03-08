@@ -1,446 +1,408 @@
-package com.simplecontacts;
+package com.simplecontacts
 
-import android.Manifest;
-import android.content.ContentResolver;
-import android.content.pm.PackageManager;
-import android.database.Cursor;
-import android.provider.ContactsContract;
-import android.provider.ContactsContract.CommonDataKinds;
-import androidx.core.content.ContextCompat;
-import androidx.core.app.ActivityCompat;
+import android.Manifest
+import android.content.ContentResolver
+import android.content.pm.PackageManager
+import android.database.Cursor
+import android.provider.ContactsContract
+import android.provider.ContactsContract.CommonDataKinds
+import androidx.core.content.ContextCompat
+import androidx.core.app.ActivityCompat
 
-import com.facebook.react.bridge.Arguments;
-import com.facebook.react.bridge.Promise;
-import com.facebook.react.bridge.ReactApplicationContext;
-import com.facebook.react.bridge.ReactContextBaseJavaModule;
-import com.facebook.react.bridge.ReactMethod;
-import com.facebook.react.bridge.WritableArray;
-import com.facebook.react.bridge.WritableMap;
-import com.facebook.react.modules.core.PermissionAwareActivity;
-import com.facebook.react.modules.core.PermissionListener;
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.Promise
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.ReactContextBaseJavaModule
+import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.WritableArray
+import com.facebook.react.bridge.WritableMap
+import com.facebook.react.modules.core.PermissionAwareActivity
+import com.facebook.react.modules.core.PermissionListener
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.ArrayList
+import java.util.HashMap
+import java.util.Map
 
-public class ContactsModule extends ReactContextBaseJavaModule implements PermissionListener {
-    private static final int PERMISSION_REQUEST_CODE = 1;
-    private ReactApplicationContext reactContext;
-    private Promise permissionPromise;
-
-    public ContactsModule(ReactApplicationContext reactContext) {
-        super(reactContext);
-        this.reactContext = reactContext;
+class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(), PermissionListener {
+    private val reactContext: ReactApplicationContext = reactContext
+    private var permissionPromise: Promise? = null
+    
+    companion object {
+        private const val PERMISSION_REQUEST_CODE = 1
     }
 
-    @Override
-    public String getName() {
-        return "ContactsModule";
+    override fun getName(): String {
+        return "ContactsModule"
     }
 
     @ReactMethod
-    public void getContacts(Promise promise) {
+    fun getContacts(promise: Promise) {
         if (hasPermission()) {
             try {
-                ContentResolver contentResolver = reactContext.getContentResolver();
-                WritableArray contacts = Arguments.createArray();
+                val contentResolver: ContentResolver = reactContext.contentResolver
+                val contacts: WritableArray = Arguments.createArray()
                 
                 // Contact IDs Map to avoid duplicates
-                Map<String, WritableMap> contactsMap = new HashMap<>();
+                val contactsMap: MutableMap<String, WritableMap> = HashMap()
                 
                 // Get contacts
-                Cursor cursor = contentResolver.query(
+                val cursor: Cursor? = contentResolver.query(
                         ContactsContract.Contacts.CONTENT_URI,
                         null,
                         null,
                         null,
                         ContactsContract.Contacts.DISPLAY_NAME + " ASC"
-                );
+                )
                 
-                if (cursor != null && cursor.getCount() > 0) {
+                if (cursor != null && cursor.count > 0) {
                     while (cursor.moveToNext()) {
-                        String contactId = cursor.getString(cursor.getColumnIndex(ContactsContract.Contacts._ID));
+                        val contactId: String = cursor.getString(cursor.getColumnIndex(ContactsContract.Contacts._ID))
                         
                         if (!contactsMap.containsKey(contactId)) {
-                            WritableMap contact = Arguments.createMap();
+                            val contact: WritableMap = Arguments.createMap()
                             
                             // Basic info
-                            contact.putString("recordID", contactId);
-                            contact.putString("backTitle", "");
+                            contact.putString("recordID", contactId)
+                            contact.putString("backTitle", "")
                             
-                            String displayName = cursor.getString(cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME));
-                            contact.putString("displayName", displayName != null ? displayName : "");
+                            val displayName: String? = cursor.getString(cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME))
+                            contact.putString("displayName", displayName ?: "")
                             
                             // Initialize arrays
-                            contact.putArray("emailAddresses", Arguments.createArray());
-                            contact.putArray("phoneNumbers", Arguments.createArray());
-                            contact.putArray("postalAddresses", Arguments.createArray());
-                            contact.putArray("imAddresses", Arguments.createArray());
-                            contact.putArray("urlAddresses", Arguments.createArray());
+                            contact.putArray("emailAddresses", Arguments.createArray())
+                            contact.putArray("phoneNumbers", Arguments.createArray())
+                            contact.putArray("postalAddresses", Arguments.createArray())
+                            contact.putArray("imAddresses", Arguments.createArray())
+                            contact.putArray("urlAddresses", Arguments.createArray())
                             
                             // Default values for required fields
-                            contact.putString("familyName", "");
-                            contact.putString("givenName", "");
-                            contact.putString("middleName", "");
-                            contact.putString("jobTitle", "");
-                            contact.putString("company", "");
-                            contact.putBoolean("hasThumbnail", false);
-                            contact.putString("thumbnailPath", "");
-                            contact.putBoolean("isStarred", false);
-                            contact.putString("prefix", "");
-                            contact.putString("suffix", "");
-                            contact.putString("department", "");
-                            contact.putString("note", "");
+                            contact.putString("familyName", "")
+                            contact.putString("givenName", "")
+                            contact.putString("middleName", "")
+                            contact.putString("jobTitle", "")
+                            contact.putString("company", "")
+                            contact.putBoolean("hasThumbnail", false)
+                            contact.putString("thumbnailPath", "")
+                            contact.putBoolean("isStarred", false)
+                            contact.putString("prefix", "")
+                            contact.putString("suffix", "")
+                            contact.putString("department", "")
+                            contact.putString("note", "")
                             
                             // Birthday (empty)
-                            WritableMap birthday = Arguments.createMap();
-                            contact.putMap("birthday", birthday);
+                            val birthday: WritableMap = Arguments.createMap()
+                            contact.putMap("birthday", birthday)
                             
-                            contactsMap.put(contactId, contact);
+                            contactsMap[contactId] = contact
                         }
                     }
-                    cursor.close();
+                    cursor.close()
                 }
                 
                 // Get more details for each contact
-                for (String contactId : contactsMap.keySet()) {
-                    WritableMap contact = contactsMap.get(contactId);
+                for (contactId in contactsMap.keys) {
+                    val contact: WritableMap? = contactsMap[contactId]
                     
                     // Names
-                    Cursor nameCursor = contentResolver.query(
+                    val nameCursor: Cursor? = contentResolver.query(
                             ContactsContract.Data.CONTENT_URI,
                             null,
                             ContactsContract.Data.CONTACT_ID + " = ? AND " +
                                     ContactsContract.Data.MIMETYPE + " = ?",
-                            new String[]{contactId, CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE},
+                            arrayOf(contactId, CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE),
                             null
-                    );
+                    )
                     
                     if (nameCursor != null && nameCursor.moveToFirst()) {
-                        String familyName = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.FAMILY_NAME));
-                        String givenName = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.GIVEN_NAME));
-                        String middleName = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.MIDDLE_NAME));
-                        String prefix = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.PREFIX));
-                        String suffix = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.SUFFIX));
+                        val familyName: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.FAMILY_NAME))
+                        val givenName: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.GIVEN_NAME))
+                        val middleName: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.MIDDLE_NAME))
+                        val prefix: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.PREFIX))
+                        val suffix: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.SUFFIX))
                         
-                        contact.putString("familyName", familyName != null ? familyName : "");
-                        contact.putString("givenName", givenName != null ? givenName : "");
-                        contact.putString("middleName", middleName != null ? middleName : "");
-                        contact.putString("prefix", prefix != null ? prefix : "");
-                        contact.putString("suffix", suffix != null ? suffix : "");
-                        nameCursor.close();
+                        contact?.putString("familyName", familyName ?: "")
+                        contact?.putString("givenName", givenName ?: "")
+                        contact?.putString("middleName", middleName ?: "")
+                        contact?.putString("prefix", prefix ?: "")
+                        contact?.putString("suffix", suffix ?: "")
+                        nameCursor.close()
                     }
                     
                     // Organization
-                    Cursor orgCursor = contentResolver.query(
+                    val orgCursor: Cursor? = contentResolver.query(
                             ContactsContract.Data.CONTENT_URI,
                             null,
                             ContactsContract.Data.CONTACT_ID + " = ? AND " +
                                     ContactsContract.Data.MIMETYPE + " = ?",
-                            new String[]{contactId, CommonDataKinds.Organization.CONTENT_ITEM_TYPE},
+                            arrayOf(contactId, CommonDataKinds.Organization.CONTENT_ITEM_TYPE),
                             null
-                    );
+                    )
                     
                     if (orgCursor != null && orgCursor.moveToFirst()) {
-                        String company = orgCursor.getString(orgCursor.getColumnIndex(CommonDataKinds.Organization.COMPANY));
-                        String department = orgCursor.getString(orgCursor.getColumnIndex(CommonDataKinds.Organization.DEPARTMENT));
-                        String title = orgCursor.getString(orgCursor.getColumnIndex(CommonDataKinds.Organization.TITLE));
+                        val company: String? = orgCursor.getString(orgCursor.getColumnIndex(CommonDataKinds.Organization.COMPANY))
+                        val department: String? = orgCursor.getString(orgCursor.getColumnIndex(CommonDataKinds.Organization.DEPARTMENT))
+                        val title: String? = orgCursor.getString(orgCursor.getColumnIndex(CommonDataKinds.Organization.TITLE))
                         
-                        contact.putString("company", company != null ? company : "");
-                        contact.putString("department", department != null ? department : "");
-                        contact.putString("jobTitle", title != null ? title : "");
-                        orgCursor.close();
+                        contact?.putString("company", company ?: "")
+                        contact?.putString("department", department ?: "")
+                        contact?.putString("jobTitle", title ?: "")
+                        orgCursor.close()
                     }
                     
                     // Phone Numbers
-                    Cursor phoneCursor = contentResolver.query(
+                    val phoneCursor: Cursor? = contentResolver.query(
                             CommonDataKinds.Phone.CONTENT_URI,
                             null,
                             CommonDataKinds.Phone.CONTACT_ID + " = ?",
-                            new String[]{contactId},
+                            arrayOf(contactId),
                             null
-                    );
+                    )
                     
-                    WritableArray phoneNumbers = Arguments.createArray();
+                    val phoneNumbers: WritableArray = Arguments.createArray()
                     if (phoneCursor != null) {
                         while (phoneCursor.moveToNext()) {
-                            WritableMap phoneNumber = Arguments.createMap();
-                            String number = phoneCursor.getString(phoneCursor.getColumnIndex(CommonDataKinds.Phone.NUMBER));
-                            int type = phoneCursor.getInt(phoneCursor.getColumnIndex(CommonDataKinds.Phone.TYPE));
-                            String label;
+                            val phoneNumber: WritableMap = Arguments.createMap()
+                            val number: String = phoneCursor.getString(phoneCursor.getColumnIndex(CommonDataKinds.Phone.NUMBER))
+                            val type: Int = phoneCursor.getInt(phoneCursor.getColumnIndex(CommonDataKinds.Phone.TYPE))
+                            val label: String
                             
-                            switch (type) {
-                                case CommonDataKinds.Phone.TYPE_HOME:
-                                    label = "home";
-                                    break;
-                                case CommonDataKinds.Phone.TYPE_WORK:
-                                    label = "work";
-                                    break;
-                                case CommonDataKinds.Phone.TYPE_MOBILE:
-                                    label = "mobile";
-                                    break;
-                                default:
-                                    label = "other";
+                            when (type) {
+                                CommonDataKinds.Phone.TYPE_HOME -> label = "home"
+                                CommonDataKinds.Phone.TYPE_WORK -> label = "work"
+                                CommonDataKinds.Phone.TYPE_MOBILE -> label = "mobile"
+                                else -> label = "other"
                             }
                             
-                            phoneNumber.putString("label", label);
-                            phoneNumber.putString("number", number);
-                            phoneNumbers.pushMap(phoneNumber);
+                            phoneNumber.putString("label", label)
+                            phoneNumber.putString("number", number)
+                            phoneNumbers.pushMap(phoneNumber)
                         }
-                        phoneCursor.close();
+                        phoneCursor.close()
                     }
-                    contact.putArray("phoneNumbers", phoneNumbers);
+                    contact?.putArray("phoneNumbers", phoneNumbers)
                     
                     // Email Addresses
-                    Cursor emailCursor = contentResolver.query(
+                    val emailCursor: Cursor? = contentResolver.query(
                             CommonDataKinds.Email.CONTENT_URI,
                             null,
                             CommonDataKinds.Email.CONTACT_ID + " = ?",
-                            new String[]{contactId},
+                            arrayOf(contactId),
                             null
-                    );
+                    )
                     
-                    WritableArray emailAddresses = Arguments.createArray();
+                    val emailAddresses: WritableArray = Arguments.createArray()
                     if (emailCursor != null) {
                         while (emailCursor.moveToNext()) {
-                            WritableMap emailAddress = Arguments.createMap();
-                            String email = emailCursor.getString(emailCursor.getColumnIndex(CommonDataKinds.Email.ADDRESS));
-                            int type = emailCursor.getInt(emailCursor.getColumnIndex(CommonDataKinds.Email.TYPE));
-                            String label;
+                            val emailAddress: WritableMap = Arguments.createMap()
+                            val email: String = emailCursor.getString(emailCursor.getColumnIndex(CommonDataKinds.Email.ADDRESS))
+                            val type: Int = emailCursor.getInt(emailCursor.getColumnIndex(CommonDataKinds.Email.TYPE))
+                            val label: String
                             
-                            switch (type) {
-                                case CommonDataKinds.Email.TYPE_HOME:
-                                    label = "home";
-                                    break;
-                                case CommonDataKinds.Email.TYPE_WORK:
-                                    label = "work";
-                                    break;
-                                default:
-                                    label = "other";
+                            when (type) {
+                                CommonDataKinds.Email.TYPE_HOME -> label = "home"
+                                CommonDataKinds.Email.TYPE_WORK -> label = "work"
+                                else -> label = "other"
                             }
                             
-                            emailAddress.putString("label", label);
-                            emailAddress.putString("email", email);
-                            emailAddresses.pushMap(emailAddress);
+                            emailAddress.putString("label", label)
+                            emailAddress.putString("email", email)
+                            emailAddresses.pushMap(emailAddress)
                         }
-                        emailCursor.close();
+                        emailCursor.close()
                     }
-                    contact.putArray("emailAddresses", emailAddresses);
+                    contact?.putArray("emailAddresses", emailAddresses)
                     
                     // Postal Addresses
-                    Cursor addressCursor = contentResolver.query(
+                    val addressCursor: Cursor? = contentResolver.query(
                             CommonDataKinds.StructuredPostal.CONTENT_URI,
                             null,
                             CommonDataKinds.StructuredPostal.CONTACT_ID + " = ?",
-                            new String[]{contactId},
+                            arrayOf(contactId),
                             null
-                    );
+                    )
                     
-                    WritableArray postalAddresses = Arguments.createArray();
+                    val postalAddresses: WritableArray = Arguments.createArray()
                     if (addressCursor != null) {
                         while (addressCursor.moveToNext()) {
-                            WritableMap postalAddress = Arguments.createMap();
-                            String street = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.STREET));
-                            String city = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.CITY));
-                            String state = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.REGION));
-                            String postCode = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.POSTCODE));
-                            String country = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.COUNTRY));
-                            int type = addressCursor.getInt(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.TYPE));
-                            String label;
+                            val postalAddress: WritableMap = Arguments.createMap()
+                            val street: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.STREET))
+                            val city: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.CITY))
+                            val state: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.REGION))
+                            val postCode: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.POSTCODE))
+                            val country: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.COUNTRY))
+                            val type: Int = addressCursor.getInt(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.TYPE))
+                            val label: String
                             
-                            switch (type) {
-                                case CommonDataKinds.StructuredPostal.TYPE_HOME:
-                                    label = "home";
-                                    break;
-                                case CommonDataKinds.StructuredPostal.TYPE_WORK:
-                                    label = "work";
-                                    break;
-                                default:
-                                    label = "other";
+                            when (type) {
+                                CommonDataKinds.StructuredPostal.TYPE_HOME -> label = "home"
+                                CommonDataKinds.StructuredPostal.TYPE_WORK -> label = "work"
+                                else -> label = "other"
                             }
                             
-                            postalAddress.putString("label", label);
-                            postalAddress.putString("street", street != null ? street : "");
-                            postalAddress.putString("city", city != null ? city : "");
-                            postalAddress.putString("state", state != null ? state : "");
-                            postalAddress.putString("postCode", postCode != null ? postCode : "");
-                            postalAddress.putString("country", country != null ? country : "");
-                            postalAddresses.pushMap(postalAddress);
+                            postalAddress.putString("label", label)
+                            postalAddress.putString("street", street ?: "")
+                            postalAddress.putString("city", city ?: "")
+                            postalAddress.putString("state", state ?: "")
+                            postalAddress.putString("postCode", postCode ?: "")
+                            postalAddress.putString("country", country ?: "")
+                            postalAddresses.pushMap(postalAddress)
                         }
-                        addressCursor.close();
+                        addressCursor.close()
                     }
-                    contact.putArray("postalAddresses", postalAddresses);
+                    contact?.putArray("postalAddresses", postalAddresses)
                     
                     // Note
-                    Cursor noteCursor = contentResolver.query(
+                    val noteCursor: Cursor? = contentResolver.query(
                             ContactsContract.Data.CONTENT_URI,
                             null,
                             ContactsContract.Data.CONTACT_ID + " = ? AND " +
                                     ContactsContract.Data.MIMETYPE + " = ?",
-                            new String[]{contactId, CommonDataKinds.Note.CONTENT_ITEM_TYPE},
+                            arrayOf(contactId, CommonDataKinds.Note.CONTENT_ITEM_TYPE),
                             null
-                    );
+                    )
                     
                     if (noteCursor != null && noteCursor.moveToFirst()) {
-                        String note = noteCursor.getString(noteCursor.getColumnIndex(CommonDataKinds.Note.NOTE));
-                        contact.putString("note", note != null ? note : "");
-                        noteCursor.close();
+                        val note: String? = noteCursor.getString(noteCursor.getColumnIndex(CommonDataKinds.Note.NOTE))
+                        contact?.putString("note", note ?: "")
+                        noteCursor.close()
                     }
                     
                     // IM addresses
-                    Cursor imCursor = contentResolver.query(
+                    val imCursor: Cursor? = contentResolver.query(
                             ContactsContract.Data.CONTENT_URI,
                             null,
                             ContactsContract.Data.CONTACT_ID + " = ? AND " +
                                     ContactsContract.Data.MIMETYPE + " = ?",
-                            new String[]{contactId, CommonDataKinds.Im.CONTENT_ITEM_TYPE},
+                            arrayOf(contactId, CommonDataKinds.Im.CONTENT_ITEM_TYPE),
                             null
-                    );
+                    )
                     
-                    WritableArray imAddresses = Arguments.createArray();
+                    val imAddresses: WritableArray = Arguments.createArray()
                     if (imCursor != null) {
                         while (imCursor.moveToNext()) {
-                            WritableMap imAddress = Arguments.createMap();
-                            String username = imCursor.getString(imCursor.getColumnIndex(CommonDataKinds.Im.DATA));
-                            int protocolType = imCursor.getInt(imCursor.getColumnIndex(CommonDataKinds.Im.PROTOCOL));
-                            String service;
+                            val imAddress: WritableMap = Arguments.createMap()
+                            val username: String? = imCursor.getString(imCursor.getColumnIndex(CommonDataKinds.Im.DATA))
+                            val protocolType: Int = imCursor.getInt(imCursor.getColumnIndex(CommonDataKinds.Im.PROTOCOL))
+                            val service: String
                             
-                            switch (protocolType) {
-                                case CommonDataKinds.Im.PROTOCOL_AIM:
-                                    service = "AIM";
-                                    break;
-                                case CommonDataKinds.Im.PROTOCOL_MSN:
-                                    service = "MSN";
-                                    break;
-                                case CommonDataKinds.Im.PROTOCOL_YAHOO:
-                                    service = "Yahoo";
-                                    break;
-                                case CommonDataKinds.Im.PROTOCOL_SKYPE:
-                                    service = "Skype";
-                                    break;
-                                case CommonDataKinds.Im.PROTOCOL_QQ:
-                                    service = "QQ";
-                                    break;
-                                case CommonDataKinds.Im.PROTOCOL_GOOGLE_TALK:
-                                    service = "Google Talk";
-                                    break;
-                                case CommonDataKinds.Im.PROTOCOL_ICQ:
-                                    service = "ICQ";
-                                    break;
-                                case CommonDataKinds.Im.PROTOCOL_JABBER:
-                                    service = "Jabber";
-                                    break;
-                                default:
-                                    service = "Other";
+                            when (protocolType) {
+                                CommonDataKinds.Im.PROTOCOL_AIM -> service = "AIM"
+                                CommonDataKinds.Im.PROTOCOL_MSN -> service = "MSN"
+                                CommonDataKinds.Im.PROTOCOL_YAHOO -> service = "Yahoo"
+                                CommonDataKinds.Im.PROTOCOL_SKYPE -> service = "Skype"
+                                CommonDataKinds.Im.PROTOCOL_QQ -> service = "QQ"
+                                CommonDataKinds.Im.PROTOCOL_GOOGLE_TALK -> service = "Google Talk"
+                                CommonDataKinds.Im.PROTOCOL_ICQ -> service = "ICQ"
+                                CommonDataKinds.Im.PROTOCOL_JABBER -> service = "Jabber"
+                                else -> service = "Other"
                             }
                             
-                            imAddress.putString("service", service);
-                            imAddress.putString("username", username != null ? username : "");
-                            imAddresses.pushMap(imAddress);
+                            imAddress.putString("service", service)
+                            imAddress.putString("username", username ?: "")
+                            imAddresses.pushMap(imAddress)
                         }
-                        imCursor.close();
+                        imCursor.close()
                     }
-                    contact.putArray("imAddresses", imAddresses);
+                    contact?.putArray("imAddresses", imAddresses)
                     
                     // Birthday
-                    Cursor bdayCursor = contentResolver.query(
+                    val bdayCursor: Cursor? = contentResolver.query(
                             ContactsContract.Data.CONTENT_URI,
                             null,
                             ContactsContract.Data.CONTACT_ID + " = ? AND " +
                                     ContactsContract.Data.MIMETYPE + " = ?",
-                            new String[]{contactId, CommonDataKinds.Event.CONTENT_ITEM_TYPE},
+                            arrayOf(contactId, CommonDataKinds.Event.CONTENT_ITEM_TYPE),
                             null
-                    );
+                    )
                     
-                    WritableMap birthday = Arguments.createMap();
+                    val birthday: WritableMap = Arguments.createMap()
                     if (bdayCursor != null) {
                         while (bdayCursor.moveToNext()) {
-                            int type = bdayCursor.getInt(bdayCursor.getColumnIndex(CommonDataKinds.Event.TYPE));
+                            val type: Int = bdayCursor.getInt(bdayCursor.getColumnIndex(CommonDataKinds.Event.TYPE))
                             if (type == CommonDataKinds.Event.TYPE_BIRTHDAY) {
-                                String startDate = bdayCursor.getString(bdayCursor.getColumnIndex(CommonDataKinds.Event.START_DATE));
+                                val startDate: String? = bdayCursor.getString(bdayCursor.getColumnIndex(CommonDataKinds.Event.START_DATE))
                                 if (startDate != null) {
-                                    String[] parts = startDate.split("-");
-                                    if (parts.length >= 3) {
+                                    val parts: Array<String> = startDate.split("-").toTypedArray()
+                                    if (parts.size >= 3) {
                                         try {
-                                            int year = Integer.parseInt(parts[0]);
-                                            int month = Integer.parseInt(parts[1]);
-                                            int day = Integer.parseInt(parts[2]);
+                                            val year: Int = parts[0].toInt()
+                                            val month: Int = parts[1].toInt()
+                                            val day: Int = parts[2].toInt()
                                             
-                                            birthday.putInt("year", year);
-                                            birthday.putInt("month", month);
-                                            birthday.putInt("day", day);
-                                        } catch (NumberFormatException e) {
+                                            birthday.putInt("year", year)
+                                            birthday.putInt("month", month)
+                                            birthday.putInt("day", day)
+                                        } catch (e: NumberFormatException) {
                                             // Ignore parsing errors
                                         }
                                     }
                                 }
-                                break;
+                                break
                             }
                         }
-                        bdayCursor.close();
+                        bdayCursor.close()
                     }
-                    contact.putMap("birthday", birthday);
+                    contact?.putMap("birthday", birthday)
                     
                     // Add to contacts array
-                    contacts.pushMap(contact);
+                    contacts.pushMap(contact)
                 }
                 
-                promise.resolve(contacts);
-            } catch (Exception e) {
-                promise.reject("fetch_error", "Could not fetch contacts: " + e.getMessage());
+                promise.resolve(contacts)
+            } catch (e: Exception) {
+                promise.reject("fetch_error", "Could not fetch contacts: " + e.message)
             }
         } else {
-            promise.reject("permission_denied", "Contacts permission not granted");
+            promise.reject("permission_denied", "Contacts permission not granted")
         }
     }
 
     @ReactMethod
-    public void checkPermission(Promise promise) {
-        promise.resolve(hasPermission());
+    fun checkPermission(promise: Promise) {
+        promise.resolve(hasPermission())
     }
 
     @ReactMethod
-    public void requestPermission(Promise promise) {
-        this.permissionPromise = promise;
+    fun requestPermission(promise: Promise) {
+        this.permissionPromise = promise
         
         if (hasPermission()) {
-            promise.resolve(true);
-            return;
+            promise.resolve(true)
+            return
         }
         
-        if (getCurrentActivity() != null) {
+        if (currentActivity != null) {
             try {
-                ((PermissionAwareActivity) getCurrentActivity()).requestPermissions(
-                        new String[]{Manifest.permission.READ_CONTACTS},
+                (currentActivity as PermissionAwareActivity).requestPermissions(
+                        arrayOf(Manifest.permission.READ_CONTACTS),
                         PERMISSION_REQUEST_CODE,
                         this
-                );
-            } catch (Exception e) {
-                promise.reject("permission_error", "Error requesting permission: " + e.getMessage());
+                )
+            } catch (e: Exception) {
+                promise.reject("permission_error", "Error requesting permission: " + e.message)
             }
         } else {
-            promise.reject("activity_null", "Activity is null");
+            promise.reject("activity_null", "Activity is null")
         }
     }
 
-    private boolean hasPermission() {
+    private fun hasPermission(): Boolean {
         return PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(
                 reactContext,
                 Manifest.permission.READ_CONTACTS
-        );
+        )
     }
 
-    @Override
-    public boolean onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray): Boolean {
         if (requestCode == PERMISSION_REQUEST_CODE && permissionPromise != null) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                permissionPromise.resolve(true);
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                permissionPromise!!.resolve(true)
             } else {
-                permissionPromise.resolve(false);
+                permissionPromise!!.resolve(false)
             }
-            permissionPromise = null;
-            return true;
+            permissionPromise = null
+            return true
         }
-        return false;
+        return false
     }
 }
