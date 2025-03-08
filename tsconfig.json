@@ -2,7 +2,7 @@
   "compilerOptions": {
     "rootDir": ".",
     "paths": {
-      "react-native-simple-contacts": ["./index.d.ts"]
+      "react-native-simple-contact": ["./index.d.ts"]
     },
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,
