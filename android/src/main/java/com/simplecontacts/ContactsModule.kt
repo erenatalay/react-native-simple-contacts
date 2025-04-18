@@ -364,12 +364,12 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                 PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(
                     reactContext,
                     Manifest.permission.READ_CONTACTS
-                ) -> "authorized"
+                ) -> "granted"
                 ActivityCompat.shouldShowRequestPermissionRationale(
                     reactContext.currentActivity!!,
                     Manifest.permission.READ_CONTACTS
                 ) -> "denied"
-                else -> "undefined"
+                else -> "undetermined"  // "undefined" yerine "undetermined" kullanıyoruz
             }
             promise.resolve(permissionStatus)
         } catch (e: Exception) {
@@ -382,7 +382,7 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
         this.permissionPromise = promise
         
         if (hasPermission()) {
-            promise.resolve("authorized")
+            promise.resolve("granted")  // "authorized" yerine "granted" kullanıyoruz
             return
         }
         
@@ -417,7 +417,7 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray): Boolean {
         if (requestCode == PERMISSION_REQUEST_CODE && permissionPromise != null) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                permissionPromise!!.resolve("authorized")
+                permissionPromise!!.resolve("granted")  // "authorized" yerine "granted" kullanıyoruz
             } else {
                 permissionPromise!!.resolve("denied")
             }

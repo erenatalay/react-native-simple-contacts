@@ -1,6 +1,10 @@
 import { NativeModules, Platform } from 'react-native';
 
-import type { Contact } from './contacts.types';
+import {
+  ContactsPermission,
+  type Contact,
+  type ContactsPermissionStatus,
+} from './contacts.types';
 
 export * from './contacts.types';
 const LINKING_ERROR =
@@ -20,24 +24,37 @@ const ContactsModule = NativeModules.ContactsModule
       }
     );
 
-export const requestPermission = async (): Promise<boolean> => {
-  return ContactsModule.requestPermission();
-};
+export const requestPermission =
+  async (): Promise<ContactsPermissionStatus> => {
+    return ContactsModule.requestPermission();
+  };
 
-export const checkPermission = async () => {
-  const hasPermission = await ContactsModule.checkPermission();
-  if (!hasPermission) {
-    const granted = await requestPermission();
-    return granted;
+export const checkPermission = async (): Promise<ContactsPermissionStatus> => {
+  const permissionStatus = await ContactsModule.checkPermission();
+
+  // İzin "granted" veya "limited" ise doğrudan döndür
+  if (
+    permissionStatus === ContactsPermission.granted ||
+    permissionStatus === ContactsPermission.limited
+  ) {
+    return permissionStatus;
   }
-  return true;
+
+  // İzin verilmemişse izin iste
+  return await requestPermission();
 };
 
 export const getContacts = async () => {
-  const hasPermission = await checkPermission();
-  if (hasPermission) {
+  const permissionStatus = await checkPermission();
+
+  // İzin "granted" veya "limited" ise kişileri getir
+  if (
+    permissionStatus === ContactsPermission.granted ||
+    permissionStatus === ContactsPermission.limited
+  ) {
     const contacts: Contact[] = await ContactsModule.getContacts();
     return contacts;
   }
+
   return [];
 };
