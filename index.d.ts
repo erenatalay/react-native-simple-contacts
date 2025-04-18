@@ -3,4 +3,5 @@ declare module 'react-native-simple-contact' {
   export const checkPermission: () => Promise<boolean>;
   export const getContacts: () => Promise<Contact[]>;
   export type Contact = Contact;
+  export type ContactsPermissionStatus = ContactsPermissionStatus;
 }

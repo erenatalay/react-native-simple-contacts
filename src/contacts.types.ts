@@ -56,9 +56,16 @@ export interface EmailAddress {
     urlAddresses: UrlAddress[];
     note: string;
   }
-  
+
+  export enum ContactsPermission {
+    undetermined = 'undetermined',
+    denied = 'denied',
+    granted = 'granted',
+    limited = 'limited',
+  }
+  export type ContactsPermissionStatus = keyof typeof ContactsPermission;
   export interface ContactsModuleInterface {
     getContacts(): Promise<Contact[]>;
-    checkPermission(): Promise<boolean>;
-    requestPermission(): Promise<boolean>;
+    checkPermission(): Promise<ContactsPermissionStatus>;
+    requestPermission(): Promise<ContactsPermissionStatus>;
   }

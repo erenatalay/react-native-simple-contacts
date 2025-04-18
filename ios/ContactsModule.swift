@@ -91,12 +91,23 @@ class ContactsModule: NSObject {
         let authStatus = CNContactStore.authorizationStatus(for: .contacts)
         
         switch authStatus {
+        case .denied, .restricted:
+            resolve("denied")
         case .authorized:
-            resolve(true)
-        case .denied, .restricted, .notDetermined:
-            resolve(false)
-        @unknown default:
-            resolve(false)
+            resolve("authorized")
+        case .notDetermined:
+            resolve("undefined")
+        default:
+            if #available(iOS 18, *) {
+                // In case iOS 18 adds a limited access mode like in your Obj-C version
+                if authStatus == .restricted {
+                    resolve("limited")
+                } else {
+                    resolve("undefined")
+                }
+            } else {
+                resolve("undefined")
+            }
         }
     }
     
