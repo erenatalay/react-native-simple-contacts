@@ -1,414 +1,318 @@
-package com.simplecontacts
+import Foundation
+import Contacts
 
-import android.Manifest
-import android.content.ContentResolver
-import android.content.pm.PackageManager
-import android.database.Cursor
-import android.provider.ContactsContract
-import android.provider.ContactsContract.CommonDataKinds
-import androidx.core.content.ContextCompat
-import androidx.core.app.ActivityCompat
-
-import com.facebook.react.bridge.Arguments
-import com.facebook.react.bridge.Promise
-import com.facebook.react.bridge.ReactApplicationContext
-import com.facebook.react.bridge.ReactContextBaseJavaModule
-import com.facebook.react.bridge.ReactMethod
-import com.facebook.react.bridge.WritableArray
-import com.facebook.react.bridge.WritableMap
-import com.facebook.react.modules.core.PermissionAwareActivity
-import com.facebook.react.modules.core.PermissionListener
-
-import java.util.ArrayList
-import java.util.HashMap
-import java.util.Map
-
-class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(), PermissionListener {
-    private val reactContext: ReactApplicationContext = reactContext
-    private var permissionPromise: Promise? = null
+@objc(ContactsModule)
+class ContactsModule: NSObject {
     
-    companion object {
-        private const val PERMISSION_REQUEST_CODE = 1
-    }
-
-    override fun getName(): String {
-        return "ContactsModule"
-    }
-
-    @ReactMethod
-    fun getContacts(promise: Promise) {
-        if (hasPermission()) {
-            try {
-                val contentResolver: ContentResolver = reactContext.contentResolver
-                val contacts: WritableArray = Arguments.createArray()
-                
-                // Contact IDs Map to avoid duplicates
-                val contactsMap: MutableMap<String, WritableMap> = HashMap()
-                
-                // Get contacts
-                val cursor: Cursor? = contentResolver.query(
-                        ContactsContract.Contacts.CONTENT_URI,
-                        null,
-                        null,
-                        null,
-                        ContactsContract.Contacts.DISPLAY_NAME + " ASC"
-                )
-                
-                if (cursor != null && cursor.count > 0) {
-                    while (cursor.moveToNext()) {
-                        val contactId: String = cursor.getString(cursor.getColumnIndex(ContactsContract.Contacts._ID))
-                        
-                        if (!contactsMap.containsKey(contactId)) {
-                            val contact: WritableMap = Arguments.createMap()
-                            
-                            contact.putString("recordID", contactId)
-                            contact.putString("backTitle", "")
-                            
-                            val displayName: String? = cursor.getString(cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME))
-                            contact.putString("displayName", displayName ?: "")
-                            
-                            contact.putArray("emailAddresses", Arguments.createArray())
-                            contact.putArray("phoneNumbers", Arguments.createArray())
-                            contact.putArray("postalAddresses", Arguments.createArray())
-                            contact.putArray("imAddresses", Arguments.createArray())
-                            contact.putArray("urlAddresses", Arguments.createArray())
-                            
-                            contact.putString("familyName", "")
-                            contact.putString("givenName", "")
-                            contact.putString("middleName", "")
-                            contact.putString("jobTitle", "")
-                            contact.putString("company", "")
-                            contact.putBoolean("hasThumbnail", false)
-                            contact.putString("thumbnailPath", "")
-                            contact.putBoolean("isStarred", false)
-                            contact.putString("prefix", "")
-                            contact.putString("suffix", "")
-                            contact.putString("department", "")
-                            contact.putString("note", "")
-                            
-                            val birthday: WritableMap = Arguments.createMap()
-                            contact.putMap("birthday", birthday)
-                            
-                            contactsMap[contactId] = contact
-                        }
-                    }
-                    cursor.close()
-                }
-                
-                for (contactId in contactsMap.keys) {
-                    val contact: WritableMap? = contactsMap[contactId]
-                    
-                    val nameCursor: Cursor? = contentResolver.query(
-                            ContactsContract.Data.CONTENT_URI,
-                            null,
-                            ContactsContract.Data.CONTACT_ID + " = ? AND " +
-                                    ContactsContract.Data.MIMETYPE + " = ?",
-                            arrayOf(contactId, CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE),
-                            null
-                    )
-                    
-                    if (nameCursor != null && nameCursor.moveToFirst()) {
-                        val familyName: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.FAMILY_NAME))
-                        val givenName: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.GIVEN_NAME))
-                        val middleName: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.MIDDLE_NAME))
-                        val prefix: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.PREFIX))
-                        val suffix: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.SUFFIX))
-                        
-                        contact?.putString("familyName", familyName ?: "")
-                        contact?.putString("givenName", givenName ?: "")
-                        contact?.putString("middleName", middleName ?: "")
-                        contact?.putString("prefix", prefix ?: "")
-                        contact?.putString("suffix", suffix ?: "")
-                        nameCursor.close()
-                    }
-                    
-                    val orgCursor: Cursor? = contentResolver.query(
-                            ContactsContract.Data.CONTENT_URI,
-                            null,
-                            ContactsContract.Data.CONTACT_ID + " = ? AND " +
-                                    ContactsContract.Data.MIMETYPE + " = ?",
-                            arrayOf(contactId, CommonDataKinds.Organization.CONTENT_ITEM_TYPE),
-                            null
-                    )
-                    
-                    if (orgCursor != null && orgCursor.moveToFirst()) {
-                        val company: String? = orgCursor.getString(orgCursor.getColumnIndex(CommonDataKinds.Organization.COMPANY))
-                        val department: String? = orgCursor.getString(orgCursor.getColumnIndex(CommonDataKinds.Organization.DEPARTMENT))
-                        val title: String? = orgCursor.getString(orgCursor.getColumnIndex(CommonDataKinds.Organization.TITLE))
-                        
-                        contact?.putString("company", company ?: "")
-                        contact?.putString("department", department ?: "")
-                        contact?.putString("jobTitle", title ?: "")
-                        orgCursor.close()
-                    }
-                    
-                    val phoneCursor: Cursor? = contentResolver.query(
-                            CommonDataKinds.Phone.CONTENT_URI,
-                            null,
-                            CommonDataKinds.Phone.CONTACT_ID + " = ?",
-                            arrayOf(contactId),
-                            null
-                    )
-                    
-                    val phoneNumbers: WritableArray = Arguments.createArray()
-                    if (phoneCursor != null) {
-                        while (phoneCursor.moveToNext()) {
-                            val phoneNumber: WritableMap = Arguments.createMap()
-                            val number: String = phoneCursor.getString(phoneCursor.getColumnIndex(CommonDataKinds.Phone.NUMBER))
-                            val type: Int = phoneCursor.getInt(phoneCursor.getColumnIndex(CommonDataKinds.Phone.TYPE))
-                            val label: String
-                            
-                            when (type) {
-                                CommonDataKinds.Phone.TYPE_HOME -> label = "home"
-                                CommonDataKinds.Phone.TYPE_WORK -> label = "work"
-                                CommonDataKinds.Phone.TYPE_MOBILE -> label = "mobile"
-                                else -> label = "other"
-                            }
-                            
-                            phoneNumber.putString("label", label)
-                            phoneNumber.putString("number", number)
-                            phoneNumbers.pushMap(phoneNumber)
-                        }
-                        phoneCursor.close()
-                    }
-                    contact?.putArray("phoneNumbers", phoneNumbers)
-                    
-                    val emailCursor: Cursor? = contentResolver.query(
-                            CommonDataKinds.Email.CONTENT_URI,
-                            null,
-                            CommonDataKinds.Email.CONTACT_ID + " = ?",
-                            arrayOf(contactId),
-                            null
-                    )
-                    
-                    val emailAddresses: WritableArray = Arguments.createArray()
-                    if (emailCursor != null) {
-                        while (emailCursor.moveToNext()) {
-                            val emailAddress: WritableMap = Arguments.createMap()
-                            val email: String = emailCursor.getString(emailCursor.getColumnIndex(CommonDataKinds.Email.ADDRESS))
-                            val type: Int = emailCursor.getInt(emailCursor.getColumnIndex(CommonDataKinds.Email.TYPE))
-                            val label: String
-                            
-                            when (type) {
-                                CommonDataKinds.Email.TYPE_HOME -> label = "home"
-                                CommonDataKinds.Email.TYPE_WORK -> label = "work"
-                                else -> label = "other"
-                            }
-                            
-                            emailAddress.putString("label", label)
-                            emailAddress.putString("email", email)
-                            emailAddresses.pushMap(emailAddress)
-                        }
-                        emailCursor.close()
-                    }
-                    contact?.putArray("emailAddresses", emailAddresses)
-                    
-                    val addressCursor: Cursor? = contentResolver.query(
-                            CommonDataKinds.StructuredPostal.CONTENT_URI,
-                            null,
-                            CommonDataKinds.StructuredPostal.CONTACT_ID + " = ?",
-                            arrayOf(contactId),
-                            null
-                    )
-                    
-                    val postalAddresses: WritableArray = Arguments.createArray()
-                    if (addressCursor != null) {
-                        while (addressCursor.moveToNext()) {
-                            val postalAddress: WritableMap = Arguments.createMap()
-                            val street: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.STREET))
-                            val city: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.CITY))
-                            val state: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.REGION))
-                            val postCode: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.POSTCODE))
-                            val country: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.COUNTRY))
-                            val type: Int = addressCursor.getInt(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.TYPE))
-                            val label: String
-                            
-                            when (type) {
-                                CommonDataKinds.StructuredPostal.TYPE_HOME -> label = "home"
-                                CommonDataKinds.StructuredPostal.TYPE_WORK -> label = "work"
-                                else -> label = "other"
-                            }
-                            
-                            postalAddress.putString("label", label)
-                            postalAddress.putString("street", street ?: "")
-                            postalAddress.putString("city", city ?: "")
-                            postalAddress.putString("state", state ?: "")
-                            postalAddress.putString("postCode", postCode ?: "")
-                            postalAddress.putString("country", country ?: "")
-                            postalAddresses.pushMap(postalAddress)
-                        }
-                        addressCursor.close()
-                    }
-                    contact?.putArray("postalAddresses", postalAddresses)
-                    
-                    val noteCursor: Cursor? = contentResolver.query(
-                            ContactsContract.Data.CONTENT_URI,
-                            null,
-                            ContactsContract.Data.CONTACT_ID + " = ? AND " +
-                                    ContactsContract.Data.MIMETYPE + " = ?",
-                            arrayOf(contactId, CommonDataKinds.Note.CONTENT_ITEM_TYPE),
-                            null
-                    )
-                    
-                    if (noteCursor != null && noteCursor.moveToFirst()) {
-                        val note: String? = noteCursor.getString(noteCursor.getColumnIndex(CommonDataKinds.Note.NOTE))
-                        contact?.putString("note", note ?: "")
-                        noteCursor.close()
-                    }
-                    
-                    val imCursor: Cursor? = contentResolver.query(
-                            ContactsContract.Data.CONTENT_URI,
-                            null,
-                            ContactsContract.Data.CONTACT_ID + " = ? AND " +
-                                    ContactsContract.Data.MIMETYPE + " = ?",
-                            arrayOf(contactId, CommonDataKinds.Im.CONTENT_ITEM_TYPE),
-                            null
-                    )
-                    
-                    val imAddresses: WritableArray = Arguments.createArray()
-                    if (imCursor != null) {
-                        while (imCursor.moveToNext()) {
-                            val imAddress: WritableMap = Arguments.createMap()
-                            val username: String? = imCursor.getString(imCursor.getColumnIndex(CommonDataKinds.Im.DATA))
-                            val protocolType: Int = imCursor.getInt(imCursor.getColumnIndex(CommonDataKinds.Im.PROTOCOL))
-                            val service: String
-                            
-                            when (protocolType) {
-                                CommonDataKinds.Im.PROTOCOL_AIM -> service = "AIM"
-                                CommonDataKinds.Im.PROTOCOL_MSN -> service = "MSN"
-                                CommonDataKinds.Im.PROTOCOL_YAHOO -> service = "Yahoo"
-                                CommonDataKinds.Im.PROTOCOL_SKYPE -> service = "Skype"
-                                CommonDataKinds.Im.PROTOCOL_QQ -> service = "QQ"
-                                CommonDataKinds.Im.PROTOCOL_GOOGLE_TALK -> service = "Google Talk"
-                                CommonDataKinds.Im.PROTOCOL_ICQ -> service = "ICQ"
-                                CommonDataKinds.Im.PROTOCOL_JABBER -> service = "Jabber"
-                                else -> service = "Other"
-                            }
-                            
-                            imAddress.putString("service", service)
-                            imAddress.putString("username", username ?: "")
-                            imAddresses.pushMap(imAddress)
-                        }
-                        imCursor.close()
-                    }
-                    contact?.putArray("imAddresses", imAddresses)
-                    
-                    val bdayCursor: Cursor? = contentResolver.query(
-                            ContactsContract.Data.CONTENT_URI,
-                            null,
-                            ContactsContract.Data.CONTACT_ID + " = ? AND " +
-                                    ContactsContract.Data.MIMETYPE + " = ?",
-                            arrayOf(contactId, CommonDataKinds.Event.CONTENT_ITEM_TYPE),
-                            null
-                    )
-                    
-                    val birthday: WritableMap = Arguments.createMap()
-                    if (bdayCursor != null) {
-                        while (bdayCursor.moveToNext()) {
-                            val type: Int = bdayCursor.getInt(bdayCursor.getColumnIndex(CommonDataKinds.Event.TYPE))
-                            if (type == CommonDataKinds.Event.TYPE_BIRTHDAY) {
-                                val startDate: String? = bdayCursor.getString(bdayCursor.getColumnIndex(CommonDataKinds.Event.START_DATE))
-                                if (startDate != null) {
-                                    val parts: Array<String> = startDate.split("-").toTypedArray()
-                                    if (parts.size >= 3) {
-                                        try {
-                                            val year: Int = parts[0].toInt()
-                                            val month: Int = parts[1].toInt()
-                                            val day: Int = parts[2].toInt()
-                                            
-                                            birthday.putInt("year", year)
-                                            birthday.putInt("month", month)
-                                            birthday.putInt("day", day)
-                                        } catch (e: NumberFormatException) {
-                                        }
-                                    }
-                                }
-                                break
-                            }
-                        }
-                        bdayCursor.close()
-                    }
-                    contact?.putMap("birthday", birthday)
-                    
-                    contacts.pushMap(contact)
-                }
-                
-                promise.resolve(contacts)
-            } catch (e: Exception) {
-                promise.reject("fetch_error", "Could not fetch contacts: " + e.message)
-            }
-        } else {
-            promise.reject("permission_denied", "Contacts permission not granted")
-        }
-    }
-
-    @ReactMethod
-    fun checkPermission(promise: Promise) {
-        try {
-            val permissionStatus = when {
-                PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(
-                    reactContext,
-                    Manifest.permission.READ_CONTACTS
-                ) -> "granted"
-                ActivityCompat.shouldShowRequestPermissionRationale(
-                    reactContext.currentActivity!!,
-                    Manifest.permission.READ_CONTACTS
-                ) -> "denied"
-                else -> "undetermined"  
-            }
-            promise.resolve(permissionStatus)
-        } catch (e: Exception) {
-            promise.reject("check_permission_error", e.message)
-        }
-    }
-
-    @ReactMethod
-    fun requestPermission(promise: Promise) {
-        this.permissionPromise = promise
-        
-        if (hasPermission()) {
-            promise.resolve("granted")  
-            return
-        }
-        
-        val activity = reactContext.currentActivity
-        if (activity == null) {
-            promise.reject("activity_error", "Activity is null")
-            return
-        }
-        
-        if (activity is PermissionAwareActivity) {
-            try {
-                activity.requestPermissions(
-                    arrayOf(Manifest.permission.READ_CONTACTS),
-                    PERMISSION_REQUEST_CODE,
-                    this
-                )
-            } catch (e: Exception) {
-                promise.reject("request_permission_error", e.message)
-            }
-        } else {
-            promise.reject("activity_error", "Activity is not PermissionAwareActivity")
-        }
-    }
-
-    private fun hasPermission(): Boolean {
-        return PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(
-                reactContext,
-                Manifest.permission.READ_CONTACTS
-        )
-    }
-
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray): Boolean {
-        if (requestCode == PERMISSION_REQUEST_CODE && permissionPromise != null) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                permissionPromise!!.resolve("granted")  
+    private let contactStore = CNContactStore()
+    
+    @objc
+    func getContacts(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        checkPermission({ (permissionStatus) in
+            if permissionStatus as? String == "granted" {
+                self.fetchAllContactsAfterPermissionCheck(resolve: resolve, reject: reject)
+            } else if permissionStatus as? String == "limited" {
+                self.fetchLimitedContactsAfterPermissionCheck(resolve: resolve, reject: reject)
             } else {
-                permissionPromise!!.resolve("denied")
+                DispatchQueue.main.async {
+                    reject("permission_denied", "No permission to access contacts: \(permissionStatus as? String ?? "unknown")", nil)
+                }
             }
-            permissionPromise = null
-            return true
+        }, reject: { (code, message, error) in
+            DispatchQueue.main.async {
+                reject(code, message, error)
+            }
+        })
+    }
+    private func fetchAllContactsAfterPermissionCheck(resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else {
+                DispatchQueue.main.async {
+                    reject("error", "Self is nil", nil)
+                }
+                return
+            }
+            
+            let keysToFetch: [CNKeyDescriptor] = [
+                CNContactIdentifierKey as CNKeyDescriptor,
+                CNContactGivenNameKey as CNKeyDescriptor,
+                CNContactFamilyNameKey as CNKeyDescriptor,
+                CNContactPhoneNumbersKey as CNKeyDescriptor,
+                CNContactEmailAddressesKey as CNKeyDescriptor
+            ]
+            
+            self.fetchAllContacts(keysToFetch: keysToFetch, resolve: resolve, reject: reject)
         }
+    }
+    
+    private func fetchLimitedContactsAfterPermissionCheck(resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else {
+                DispatchQueue.main.async {
+                    reject("error", "Self is nil", nil)
+                }
+                return
+            }
+            
+            let keysToFetch: [CNKeyDescriptor] = [
+                CNContactIdentifierKey as CNKeyDescriptor,
+                CNContactGivenNameKey as CNKeyDescriptor,
+                CNContactFamilyNameKey as CNKeyDescriptor,
+                CNContactPhoneNumbersKey as CNKeyDescriptor,
+                CNContactEmailAddressesKey as CNKeyDescriptor
+            ]
+            
+            self.fetchLimitedContacts(keysToFetch: keysToFetch, resolve: resolve, reject: reject)
+        }
+    }
+    
+    private func fetchAllContacts(keysToFetch: [CNKeyDescriptor], resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        do {
+            let request = CNContactFetchRequest(keysToFetch: keysToFetch)
+            var results = [[String: Any]]()
+            
+            try self.contactStore.enumerateContacts(with: request) { (contact, stopPointer) in
+                results.append(self.contactToDict(contact: contact))
+            }
+            
+            DispatchQueue.main.async {
+                resolve(results)
+            }
+        } catch {
+            DispatchQueue.main.async {
+                reject("fetch_failed", "Failed to fetch contacts: \(error.localizedDescription)", error)
+            }
+        }
+    }
+    
+    private func fetchLimitedContacts(keysToFetch: [CNKeyDescriptor], resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        do {
+            var results = [[String: Any]]()
+            
+            
+            do {
+                let request = CNContactFetchRequest(keysToFetch: keysToFetch)
+                try self.contactStore.enumerateContacts(with: request) { (contact, stopPointer) in
+                    results.append(self.contactToDict(contact: contact))
+                }
+                
+                print("Limited contacts found: \(results.count)")
+                
+                DispatchQueue.main.async {
+                    resolve(results)
+                }
+                return
+            } catch {
+                print("Primary limited access method failed: \(error.localizedDescription)")
+            }
+            
+            do {
+                let containerIdentifier = try contactStore.defaultContainerIdentifier()
+                let predicate = CNContact.predicateForContactsInContainer(withIdentifier: containerIdentifier)
+                
+                let contacts = try self.contactStore.unifiedContacts(matching: predicate, keysToFetch: keysToFetch)
+                print("Alternative method - contacts found: \(contacts.count)")
+                
+                for contact in contacts {
+                    results.append(self.contactToDict(contact: contact))
+                }
+                
+                DispatchQueue.main.async {
+                    resolve(results)
+                }
+                return
+            } catch {
+                print("Alternative limited access method failed: \(error.localizedDescription)")
+            }
+            
+            print("All limited access methods failed, returning empty results")
+            DispatchQueue.main.async {
+                resolve(results)
+            }
+        } catch {
+            DispatchQueue.main.async {
+                reject("fetch_failed", "Failed to fetch contacts: \(error.localizedDescription)", error)
+            }
+        }
+    }
+    
+    private func contactToDict(contact: CNContact) -> [String: Any] {
+        var result = [String: Any]()
+        
+        result["recordID"] = contact.identifier
+        
+        let firstName = contact.givenName
+        let lastName = contact.familyName
+        let fullName = [firstName, lastName].filter { !$0.isEmpty }.joined(separator: " ")
+        result["displayName"] = fullName.isEmpty ? "No Name" : fullName
+        
+        result["givenName"] = firstName
+        result["familyName"] = lastName
+        
+        var phoneNumbers = [[String: String]]()
+        for phone in contact.phoneNumbers {
+            phoneNumbers.append([
+                "label": CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: phone.label ?? ""),
+                "number": phone.value.stringValue
+            ])
+        }
+        result["phoneNumbers"] = phoneNumbers
+        
+        var emailAddresses = [[String: String]]()
+        for email in contact.emailAddresses {
+            emailAddresses.append([
+                "label": email.label != nil ? CNLabeledValue<NSString>.localizedString(forLabel: email.label!) : "other",
+                "email": email.value as String
+            ])
+        }
+        result["emailAddresses"] = emailAddresses
+        
+        return result
+    }
+    
+@objc
+func checkPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+    let authStatus = CNContactStore.authorizationStatus(for: .contacts)
+    
+    let rawStatus = authStatus.rawValue
+    print("Raw status value: \(rawStatus)")
+    
+    switch authStatus {
+    case .authorized:
+        print("Status: Authorized")
+        resolve("granted")
+    case .notDetermined:
+        print("Status: Not Determined")
+        resolve("undetermined")
+    case .restricted:
+        print("Status: Restricted")
+        testLimitedAccess(resolve: resolve, reject: reject)
+    case .denied:
+        print("Status: Denied")
+        resolve("denied")
+    @unknown default:
+        print("Status: Unknown (\(rawStatus))")
+        testLimitedAccess(resolve: resolve, reject: reject)
+    }
+}
+
+private func testLimitedAccess(resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+    print("Testing limited access...")
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        guard let self = self else { 
+            print("Self is nil in testLimitedAccess")
+            DispatchQueue.main.async {
+                resolve("undefined")
+            }
+            return 
+        }
+        
+        do {
+            let tempKeys = [CNContactGivenNameKey as CNKeyDescriptor]
+            print("Attempting to get container ID")
+            
+            do {
+                let containerID = try self.contactStore.defaultContainerIdentifier()
+                print("Container ID obtained: \(containerID)")
+                
+                do {
+                    let predicate = CNContact.predicateForContactsInContainer(withIdentifier: containerID)
+                    print("Attempting to access contacts with predicate")
+                    let contacts = try self.contactStore.unifiedContacts(matching: predicate, keysToFetch: tempKeys)
+                    print("Successfully accessed \(contacts.count) contacts")
+                    
+                    // Başarılı erişim varsa imited erişim var demektir
+                    DispatchQueue.main.async {
+                        print("Returning limited access permission")
+                        resolve("limited")
+                    }
+                } catch {
+                    print("Failed to access contacts: \(error.localizedDescription)")
+                    DispatchQueue.main.async {
+                        resolve("denied")
+                    }
+                }
+            } catch {
+                print("Failed to get container ID: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    resolve("denied")
+                }
+            }
+        } catch {
+            print("General error in testLimitedAccess: \(error.localizedDescription)")
+            DispatchQueue.main.async {
+                resolve("denied")
+            }
+        }
+    }
+}
+
+    @objc
+    func requestPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        contactStore.requestAccess(for: .contacts) { (granted, error) in
+            if let error = error {
+                DispatchQueue.main.async {
+                    reject("permission_error", "Error requesting contacts permission: \(error.localizedDescription)", error)
+                }
+                return
+            }
+            
+            DispatchQueue.global(qos: .userInitiated).async {
+                let authStatus = CNContactStore.authorizationStatus(for: .contacts)
+                
+                if authStatus == .authorized {
+                    DispatchQueue.main.async {
+                        resolve("granted")
+                    }
+                    return
+                } else if authStatus == .denied {
+                    DispatchQueue.main.async {
+                        resolve("denied")
+                    }
+                    return
+                } else if authStatus == .notDetermined {
+                    DispatchQueue.main.async {
+                        resolve("undetermined")
+                    }
+                    return
+                }
+                
+                do {
+                    let tempKeys = [CNContactGivenNameKey as CNKeyDescriptor]
+                    
+                    var containerID: String
+                    do {
+                        containerID = try self.contactStore.defaultContainerIdentifier()
+                    } catch {
+                        DispatchQueue.main.async {
+                            resolve("denied")
+                        }
+                        return
+                    }
+                    
+                    do {
+                        let predicate = CNContact.predicateForContactsInContainer(withIdentifier: containerID)
+                        let _ = try self.contactStore.unifiedContacts(matching: predicate, keysToFetch: tempKeys)
+                        
+                        DispatchQueue.main.async {
+                            resolve("limited")
+                        }
+                    } catch {
+                        DispatchQueue.main.async {
+                            resolve("denied")
+                        }
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        resolve("denied")
+                    }
+                }
+            }
+        }
+    }
+    
+    @objc
+    static func requiresMainQueueSetup() -> Bool {
         return false
     }
 }
