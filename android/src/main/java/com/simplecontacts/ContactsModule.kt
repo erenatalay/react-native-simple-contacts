@@ -61,21 +61,18 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                         if (!contactsMap.containsKey(contactId)) {
                             val contact: WritableMap = Arguments.createMap()
                             
-                            // Basic info
                             contact.putString("recordID", contactId)
                             contact.putString("backTitle", "")
                             
                             val displayName: String? = cursor.getString(cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME))
                             contact.putString("displayName", displayName ?: "")
                             
-                            // Initialize arrays
                             contact.putArray("emailAddresses", Arguments.createArray())
                             contact.putArray("phoneNumbers", Arguments.createArray())
                             contact.putArray("postalAddresses", Arguments.createArray())
                             contact.putArray("imAddresses", Arguments.createArray())
                             contact.putArray("urlAddresses", Arguments.createArray())
                             
-                            // Default values for required fields
                             contact.putString("familyName", "")
                             contact.putString("givenName", "")
                             contact.putString("middleName", "")
@@ -89,7 +86,6 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                             contact.putString("department", "")
                             contact.putString("note", "")
                             
-                            // Birthday (empty)
                             val birthday: WritableMap = Arguments.createMap()
                             contact.putMap("birthday", birthday)
                             
@@ -99,11 +95,9 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                     cursor.close()
                 }
                 
-                // Get more details for each contact
                 for (contactId in contactsMap.keys) {
                     val contact: WritableMap? = contactsMap[contactId]
                     
-                    // Names
                     val nameCursor: Cursor? = contentResolver.query(
                             ContactsContract.Data.CONTENT_URI,
                             null,
@@ -128,7 +122,6 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                         nameCursor.close()
                     }
                     
-                    // Organization
                     val orgCursor: Cursor? = contentResolver.query(
                             ContactsContract.Data.CONTENT_URI,
                             null,
@@ -149,7 +142,6 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                         orgCursor.close()
                     }
                     
-                    // Phone Numbers
                     val phoneCursor: Cursor? = contentResolver.query(
                             CommonDataKinds.Phone.CONTENT_URI,
                             null,
@@ -181,7 +173,6 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                     }
                     contact?.putArray("phoneNumbers", phoneNumbers)
                     
-                    // Email Addresses
                     val emailCursor: Cursor? = contentResolver.query(
                             CommonDataKinds.Email.CONTENT_URI,
                             null,
@@ -212,7 +203,6 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                     }
                     contact?.putArray("emailAddresses", emailAddresses)
                     
-                    // Postal Addresses
                     val addressCursor: Cursor? = contentResolver.query(
                             CommonDataKinds.StructuredPostal.CONTENT_URI,
                             null,
@@ -251,7 +241,6 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                     }
                     contact?.putArray("postalAddresses", postalAddresses)
                     
-                    // Note
                     val noteCursor: Cursor? = contentResolver.query(
                             ContactsContract.Data.CONTENT_URI,
                             null,
@@ -267,7 +256,6 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                         noteCursor.close()
                     }
                     
-                    // IM addresses
                     val imCursor: Cursor? = contentResolver.query(
                             ContactsContract.Data.CONTENT_URI,
                             null,
@@ -305,7 +293,6 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                     }
                     contact?.putArray("imAddresses", imAddresses)
                     
-                    // Birthday
                     val bdayCursor: Cursor? = contentResolver.query(
                             ContactsContract.Data.CONTENT_URI,
                             null,
@@ -333,7 +320,6 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                                             birthday.putInt("month", month)
                                             birthday.putInt("day", day)
                                         } catch (e: NumberFormatException) {
-                                            // Ignore parsing errors
                                         }
                                     }
                                 }
@@ -344,7 +330,6 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                     }
                     contact?.putMap("birthday", birthday)
                     
-                    // Add to contacts array
                     contacts.pushMap(contact)
                 }
                 
@@ -369,7 +354,7 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
                     reactContext.currentActivity!!,
                     Manifest.permission.READ_CONTACTS
                 ) -> "denied"
-                else -> "undetermined"  // "undefined" yerine "undetermined" kullanıyoruz
+                else -> "undetermined"  
             }
             promise.resolve(permissionStatus)
         } catch (e: Exception) {
@@ -382,7 +367,7 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
         this.permissionPromise = promise
         
         if (hasPermission()) {
-            promise.resolve("granted")  // "authorized" yerine "granted" kullanıyoruz
+            promise.resolve("granted")  
             return
         }
         
@@ -417,7 +402,7 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray): Boolean {
         if (requestCode == PERMISSION_REQUEST_CODE && permissionPromise != null) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                permissionPromise!!.resolve("granted")  // "authorized" yerine "granted" kullanıyoruz
+                permissionPromise!!.resolve("granted")  
             } else {
                 permissionPromise!!.resolve("denied")
             }
