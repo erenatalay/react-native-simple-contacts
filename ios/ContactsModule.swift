@@ -286,72 +286,82 @@ private func testLimitedAccess(resolve: @escaping RCTPromiseResolveBlock, reject
 
     @objc
     func requestPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        contactStore.requestAccess(for: .contacts) { (granted, error) in
-            if let error = error {
-                DispatchQueue.main.async {
-                    reject("permission_error", "Error requesting contacts permission: \(error.localizedDescription)", error)
-                }
+        // Önce mevcut izin durumunu kontrol et
+        checkPermission({ (permissionStatus) in
+            // Eğer izin zaten reddedilmişse, direkt denied dön
+            if permissionStatus as? String == "denied" {
+                resolve("denied")
                 return
             }
             
-            // İzin alındıktan sonra gerçek durumu kontrol et
-            DispatchQueue.global(qos: .userInitiated).async {
-                // Güncel izin durumunu al
-                let authStatus = CNContactStore.authorizationStatus(for: .contacts)
-                
-                // Basit durumları hemen değerlendir
-                if authStatus == .authorized {
+            // İzin reddedilmemişse, izin isteğine devam et
+            self.contactStore.requestAccess(for: .contacts) { (granted, error) in
+                if let error = error {
                     DispatchQueue.main.async {
-                        resolve("granted")
-                    }
-                    return
-                } else if authStatus == .denied {
-                    DispatchQueue.main.async {
-                        resolve("denied")
-                    }
-                    return
-                } else if authStatus == .notDetermined {
-                    DispatchQueue.main.async {
-                        resolve("undetermined")
+                        reject("permission_error", "Error requesting contacts permission: \(error.localizedDescription)", error)
                     }
                     return
                 }
                 
-                // restricted durumu için pratik bir test yapalım
-                do {
-                    let tempKeys = [CNContactGivenNameKey as CNKeyDescriptor]
+                // İzin alındıktan sonra gerçek durumu kontrol et
+                DispatchQueue.global(qos: .userInitiated).async {
+                    // Güncel izin durumunu al
+                    let authStatus = CNContactStore.authorizationStatus(for: .contacts)
                     
-                    // Önce container ID alabilir miyiz kontrol et
-                    var containerID: String
-                    do {
-                        containerID = try self.contactStore.defaultContainerIdentifier()
-                    } catch {
+                    // Basit durumları hemen değerlendir
+                    if authStatus == .authorized {
+                        DispatchQueue.main.async {
+                            resolve("granted")
+                        }
+                        return
+                    } else if authStatus == .denied {
                         DispatchQueue.main.async {
                             resolve("denied")
                         }
                         return
+                    } else if authStatus == .notDetermined {
+                        DispatchQueue.main.async {
+                            resolve("undetermined")
+                        }
+                        return
                     }
                     
-                    // Kişilere gerçekten erişebildiğimizi test et
+                    // restricted durumu için pratik bir test yapalım
                     do {
-                        let predicate = CNContact.predicateForContactsInContainer(withIdentifier: containerID)
-                        let _ = try self.contactStore.unifiedContacts(matching: predicate, keysToFetch: tempKeys)
+                        let tempKeys = [CNContactGivenNameKey as CNKeyDescriptor]
                         
-                        DispatchQueue.main.async {
-                            resolve("limited")
+                        // Önce container ID alabilir miyiz kontrol et
+                        var containerID: String
+                        do {
+                            containerID = try self.contactStore.defaultContainerIdentifier()
+                        } catch {
+                            DispatchQueue.main.async {
+                                resolve("denied")
+                            }
+                            return
+                        }
+                        
+                        // Kişilere gerçekten erişebildiğimizi test et
+                        do {
+                            let predicate = CNContact.predicateForContactsInContainer(withIdentifier: containerID)
+                            let _ = try self.contactStore.unifiedContacts(matching: predicate, keysToFetch: tempKeys)
+                            
+                            DispatchQueue.main.async {
+                                resolve("limited")
+                            }
+                        } catch {
+                            DispatchQueue.main.async {
+                                resolve("denied")
+                            }
                         }
                     } catch {
                         DispatchQueue.main.async {
                             resolve("denied")
                         }
                     }
-                } catch {
-                    DispatchQueue.main.async {
-                        resolve("denied")
-                    }
                 }
             }
-        }
+        }, reject: reject)
     }
     
     @objc
