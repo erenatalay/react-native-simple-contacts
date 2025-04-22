@@ -12,7 +12,7 @@ class ContactsModule: NSObject {
             if permissionStatus as? String == "granted" {
                 self.fetchAllContactsAfterPermissionCheck(resolve: resolve, reject: reject)
             } else if permissionStatus as? String == "limited" {
-                self.fetchLimitedContactsAfterPermissionCheck(resolve: resolve, reject: reject)
+                self.fetchAllContactsAfterPermissionCheck(resolve: resolve, reject: reject)
             } else {
                 DispatchQueue.main.async {
                     reject("permission_denied", "No permission to access contacts: \(permissionStatus as? String ?? "unknown")", nil)
@@ -25,7 +25,7 @@ class ContactsModule: NSObject {
         })
     }
     private func fetchAllContactsAfterPermissionCheck(resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             guard let self = self else {
                 DispatchQueue.main.async {
                     reject("error", "Self is nil", nil)
@@ -33,109 +33,148 @@ class ContactsModule: NSObject {
                 return
             }
             
+            // Sadece ihtiyaç duyulan anahtar bilgileri içeren kısaltılmış liste
             let keysToFetch: [CNKeyDescriptor] = [
                 CNContactIdentifierKey as CNKeyDescriptor,
                 CNContactGivenNameKey as CNKeyDescriptor,
                 CNContactFamilyNameKey as CNKeyDescriptor,
                 CNContactPhoneNumbersKey as CNKeyDescriptor,
-                CNContactEmailAddressesKey as CNKeyDescriptor
+                CNContactEmailAddressesKey as CNKeyDescriptor,
+                CNContactOrganizationNameKey as CNKeyDescriptor
             ]
             
             self.fetchAllContacts(keysToFetch: keysToFetch, resolve: resolve, reject: reject)
         }
     }
     
-    private func fetchLimitedContactsAfterPermissionCheck(resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else {
-                DispatchQueue.main.async {
-                    reject("error", "Self is nil", nil)
-                }
-                return
-            }
-            
-            let keysToFetch: [CNKeyDescriptor] = [
-                CNContactIdentifierKey as CNKeyDescriptor,
-                CNContactGivenNameKey as CNKeyDescriptor,
-                CNContactFamilyNameKey as CNKeyDescriptor,
-                CNContactPhoneNumbersKey as CNKeyDescriptor,
-                CNContactEmailAddressesKey as CNKeyDescriptor
-            ]
-            
-            self.fetchLimitedContacts(keysToFetch: keysToFetch, resolve: resolve, reject: reject)
-        }
-    }
-    
     private func fetchAllContacts(keysToFetch: [CNKeyDescriptor], resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
+        let processingQueue = DispatchQueue(label: "com.simplecontacts.processing", attributes: .concurrent)
+        let resultQueue = DispatchQueue(label: "com.simplecontacts.results", attributes: .concurrent)
+        
+        let semaphore = DispatchSemaphore(value: 4) // Control level of concurrency
+        
         do {
             let request = CNContactFetchRequest(keysToFetch: keysToFetch)
+            
+            request.sortOrder = .givenName
+            
+            let batchSize = 200 
             var results = [[String: Any]]()
+            var totalContacts = 0
+            
+            let group = DispatchGroup()
+            
+            var contactBuffer = [CNContact]()
+            
+            results.reserveCapacity(1000)
             
             try self.contactStore.enumerateContacts(with: request) { (contact, stopPointer) in
-                results.append(self.contactToDict(contact: contact))
+                contactBuffer.append(contact)
+                totalContacts += 1
+                
+                if contactBuffer.count >= batchSize {
+                    let contactBatch = contactBuffer
+                    contactBuffer.removeAll(keepingCapacity: true)
+                    
+                    group.enter()
+                    semaphore.wait() 
+                    
+                    processingQueue.async {
+                        let processedBatch = self.processContactBatch(contacts: contactBatch)
+                        
+                        resultQueue.async {
+                            results.append(contentsOf: processedBatch)
+                            semaphore.signal() 
+                            group.leave()
+                        }
+                    }
+                }
+                
+                if totalContacts % 1000 == 0 {
+                    let progress = totalContacts
+                    DispatchQueue.main.async {
+                    }
+                }
             }
+            
+            if !contactBuffer.isEmpty {
+                group.enter()
+                semaphore.wait()
+                
+                processingQueue.async {
+                    let processedBatch = self.processContactBatch(contacts: contactBuffer)
+                    
+                    resultQueue.async {
+                        results.append(contentsOf: processedBatch)
+                        semaphore.signal()
+                        group.leave()
+                    }
+                }
+            }
+            
+            group.wait()
+            
+            let endTime = CFAbsoluteTimeGetCurrent()
+            let duration = endTime - startTime
             
             DispatchQueue.main.async {
                 resolve(results)
             }
         } catch {
+            let endTime = CFAbsoluteTimeGetCurrent()
+            let duration = endTime - startTime
+            
             DispatchQueue.main.async {
                 reject("fetch_failed", "Failed to fetch contacts: \(error.localizedDescription)", error)
             }
         }
     }
-    
-    private func fetchLimitedContacts(keysToFetch: [CNKeyDescriptor], resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        do {
-            var results = [[String: Any]]()
-            
-            
-            do {
-                let request = CNContactFetchRequest(keysToFetch: keysToFetch)
-                try self.contactStore.enumerateContacts(with: request) { (contact, stopPointer) in
-                    results.append(self.contactToDict(contact: contact))
-                }
-                
-                print("Limited contacts found: \(results.count)")
-                
-                DispatchQueue.main.async {
-                    resolve(results)
-                }
-                return
-            } catch {
-                print("Primary limited access method failed: \(error.localizedDescription)")
-            }
-            
-            do {
-                let containerIdentifier = try contactStore.defaultContainerIdentifier()
-                let predicate = CNContact.predicateForContactsInContainer(withIdentifier: containerIdentifier)
-                
-                let contacts = try self.contactStore.unifiedContacts(matching: predicate, keysToFetch: keysToFetch)
-                print("Alternative method - contacts found: \(contacts.count)")
-                
-                for contact in contacts {
-                    results.append(self.contactToDict(contact: contact))
-                }
-                
-                DispatchQueue.main.async {
-                    resolve(results)
-                }
-                return
-            } catch {
-                print("Alternative limited access method failed: \(error.localizedDescription)")
-            }
-            
-            print("All limited access methods failed, returning empty results")
-            DispatchQueue.main.async {
-                resolve(results)
-            }
-        } catch {
-            DispatchQueue.main.async {
-                reject("fetch_failed", "Failed to fetch contacts: \(error.localizedDescription)", error)
-            }
+
+    private func processContactBatch(contacts: [CNContact]) -> [[String: Any]] {
+        var results = [[String: Any]]()
+        results.reserveCapacity(contacts.count)
+        
+        for contact in contacts {
+            let contactDict = self.contactToDict(contact: contact)
+            results.append(contactDict)
         }
+        
+        return results
     }
     
+    private func contactToLightDict(contact: CNContact) -> [String: Any] {
+        var result: [String: Any] = [
+            "recordID": contact.identifier,
+            "givenName": contact.givenName,
+            "familyName": contact.familyName
+        ]
+        
+        let fullName = [contact.givenName, contact.familyName].filter { !$0.isEmpty }.joined(separator: " ")
+        result["displayName"] = fullName.isEmpty ? "No Name" : fullName
+        
+        if let firstPhone = contact.phoneNumbers.first {
+            result["phoneNumbers"] = [[
+                "label": CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: firstPhone.label ?? ""),
+                "number": firstPhone.value.stringValue
+            ]]
+        } else {
+            result["phoneNumbers"] = []
+        }
+        
+        if let firstEmail = contact.emailAddresses.first {
+            result["emailAddresses"] = [[
+                "label": firstEmail.label != nil ? CNLabeledValue<NSString>.localizedString(forLabel: firstEmail.label!) : "other",
+                "email": firstEmail.value as String
+            ]]
+        } else {
+            result["emailAddresses"] = []
+        }
+        
+        return result
+    }
+
     private func contactToDict(contact: CNContact) -> [String: Any] {
         var result = [String: Any]()
         
@@ -148,6 +187,8 @@ class ContactsModule: NSObject {
         
         result["givenName"] = firstName
         result["familyName"] = lastName
+        
+        result["company"] = contact.organizationName
         
         var phoneNumbers = [[String: String]]()
         for phone in contact.phoneNumbers {
@@ -174,143 +215,93 @@ class ContactsModule: NSObject {
 func checkPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
     let authStatus = CNContactStore.authorizationStatus(for: .contacts)
     
-    let rawStatus = authStatus.rawValue
-    print("Raw status value: \(rawStatus)")
+    
+    if authStatus.rawValue == 3 {
+        resolve("limited")
+        return
+    }
     
     switch authStatus {
     case .authorized:
-        print("Status: Authorized")
         resolve("granted")
-    case .notDetermined:
-        print("Status: Not Determined")
-        resolve("undetermined")
-    case .restricted:
-        print("Status: Restricted")
-        testLimitedAccess(resolve: resolve, reject: reject)
+        return
     case .denied:
-        print("Status: Denied")
         resolve("denied")
+        return
+    case .notDetermined:
+        resolve("undetermined")
+        return
+    case .restricted:
+        if containerAccessAvailable() {
+            resolve("limited")
+            return
+        }
+        resolve("denied")
+        return
+    case .limited:
+        resolve("limited")
+        return
     @unknown default:
-        print("Status: Unknown (\(rawStatus))")
-        testLimitedAccess(resolve: resolve, reject: reject)
+        if containerAccessAvailable() {
+            resolve("limited")
+        } else {
+            resolve("denied")
+        }
+        return
     }
 }
 
-private func testLimitedAccess(resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-    print("Testing limited access...")
-    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-        guard let self = self else { 
-            print("Self is nil in testLimitedAccess")
+private func containerAccessAvailable() -> Bool {
+    do {
+        let _ = try contactStore.defaultContainerIdentifier()
+        return true
+    } catch {
+        return false
+    }
+}
+
+@objc
+func requestPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+    contactStore.requestAccess(for: .contacts) { (granted, error) in
+        if let error = error {
             DispatchQueue.main.async {
-                resolve("undefined")
+                reject("permission_error", "Error requesting contacts permission: \(error.localizedDescription)", error)
             }
-            return 
+            return
         }
         
-        do {
-            let tempKeys = [CNContactGivenNameKey as CNKeyDescriptor]
-            print("Attempting to get container ID")
+        DispatchQueue.main.async {
+            let authStatus = CNContactStore.authorizationStatus(for: .contacts)
             
-            do {
-                let containerID = try self.contactStore.defaultContainerIdentifier()
-                print("Container ID obtained: \(containerID)")
+            switch authStatus {
+            case .authorized:
+                resolve("granted")
                 
-                do {
-                    let predicate = CNContact.predicateForContactsInContainer(withIdentifier: containerID)
-                    print("Attempting to access contacts with predicate")
-                    let contacts = try self.contactStore.unifiedContacts(matching: predicate, keysToFetch: tempKeys)
-                    print("Successfully accessed \(contacts.count) contacts")
-                    
-                    // Başarılı erişim varsa imited erişim var demektir
-                    DispatchQueue.main.async {
-                        print("Returning limited access permission")
-                        resolve("limited")
-                    }
-                } catch {
-                    print("Failed to access contacts: \(error.localizedDescription)")
-                    DispatchQueue.main.async {
-                        resolve("denied")
-                    }
+            case .denied:
+                resolve("denied")
+                
+            case .restricted:
+                resolve("denied")
+                
+            case .notDetermined:
+                resolve("undetermined")
+                
+            default:
+                if authStatus.rawValue == 3 {
+                    resolve("limited")
+                    return
                 }
-            } catch {
-                print("Failed to get container ID: \(error.localizedDescription)")
-                DispatchQueue.main.async {
+                
+                if self.containerAccessAvailable() {
+                    resolve("limited")
+                } else {
                     resolve("denied")
                 }
             }
-        } catch {
-            print("General error in testLimitedAccess: \(error.localizedDescription)")
-            DispatchQueue.main.async {
-                resolve("denied")
-            }
         }
     }
 }
-
-    @objc
-    func requestPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        contactStore.requestAccess(for: .contacts) { (granted, error) in
-            if let error = error {
-                DispatchQueue.main.async {
-                    reject("permission_error", "Error requesting contacts permission: \(error.localizedDescription)", error)
-                }
-                return
-            }
-            
-            DispatchQueue.global(qos: .userInitiated).async {
-                let authStatus = CNContactStore.authorizationStatus(for: .contacts)
-                
-                if authStatus == .authorized {
-                    DispatchQueue.main.async {
-                        resolve("granted")
-                    }
-                    return
-                } else if authStatus == .denied {
-                    DispatchQueue.main.async {
-                        resolve("denied")
-                    }
-                    return
-                } else if authStatus == .notDetermined {
-                    DispatchQueue.main.async {
-                        resolve("undetermined")
-                    }
-                    return
-                }
-                
-                do {
-                    let tempKeys = [CNContactGivenNameKey as CNKeyDescriptor]
-                    
-                    var containerID: String
-                    do {
-                        containerID = try self.contactStore.defaultContainerIdentifier()
-                    } catch {
-                        DispatchQueue.main.async {
-                            resolve("denied")
-                        }
-                        return
-                    }
-                    
-                    do {
-                        let predicate = CNContact.predicateForContactsInContainer(withIdentifier: containerID)
-                        let _ = try self.contactStore.unifiedContacts(matching: predicate, keysToFetch: tempKeys)
-                        
-                        DispatchQueue.main.async {
-                            resolve("limited")
-                        }
-                    } catch {
-                        DispatchQueue.main.async {
-                            resolve("denied")
-                        }
-                    }
-                } catch {
-                    DispatchQueue.main.async {
-                        resolve("denied")
-                    }
-                }
-            }
-        }
-    }
-    
+  
     @objc
     static func requiresMainQueueSetup() -> Bool {
         return false

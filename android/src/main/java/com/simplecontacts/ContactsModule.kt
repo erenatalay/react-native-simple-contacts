@@ -8,6 +8,9 @@ import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds
 import androidx.core.content.ContextCompat
 import androidx.core.app.ActivityCompat
+import android.util.Log
+import android.net.Uri
+import android.os.AsyncTask
 
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -22,13 +25,18 @@ import com.facebook.react.modules.core.PermissionListener
 import java.util.ArrayList
 import java.util.HashMap
 import java.util.Map
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(), PermissionListener {
     private val reactContext: ReactApplicationContext = reactContext
     private var permissionPromise: Promise? = null
+    private val TAG = "ContactsModule"
+    private val executor = Executors.newFixedThreadPool(2)
     
     companion object {
         private const val PERMISSION_REQUEST_CODE = 1
+        private const val BATCH_SIZE = 500
     }
 
     override fun getName(): String {
@@ -38,307 +46,299 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
     @ReactMethod
     fun getContacts(promise: Promise) {
         if (hasPermission()) {
+            fetchContactsOptimized(promise)
+        } else {
+            promise.reject("permission_denied", "Contacts permission not granted")
+        }
+    }
+    
+    private fun fetchContactsOptimized(promise: Promise) {
+        val startTime = System.currentTimeMillis()
+        
+        executor.execute {
             try {
                 val contentResolver: ContentResolver = reactContext.contentResolver
                 val contacts: WritableArray = Arguments.createArray()
                 
-                // Contact IDs Map to avoid duplicates
-                val contactsMap: MutableMap<String, WritableMap> = HashMap()
-                
-                // Get contacts
-                val cursor: Cursor? = contentResolver.query(
-                        ContactsContract.Contacts.CONTENT_URI,
-                        null,
-                        null,
-                        null,
-                        ContactsContract.Contacts.DISPLAY_NAME + " ASC"
+                val projection = arrayOf(
+                    ContactsContract.Contacts._ID,
+                    ContactsContract.Contacts.LOOKUP_KEY,
+                    ContactsContract.Contacts.DISPLAY_NAME_PRIMARY,
+                    ContactsContract.Contacts.PHOTO_URI,
+                    ContactsContract.Contacts.PHOTO_THUMBNAIL_URI,
+                    ContactsContract.Contacts.STARRED
                 )
                 
-                if (cursor != null && cursor.count > 0) {
-                    while (cursor.moveToNext()) {
-                        val contactId: String = cursor.getString(cursor.getColumnIndex(ContactsContract.Contacts._ID))
+                val contactsUri = ContactsContract.Contacts.CONTENT_URI
+                var cursor: Cursor? = null
+                
+                try {
+                    cursor = contentResolver.query(
+                        contactsUri,
+                        projection,
+                        "${ContactsContract.Contacts.HAS_PHONE_NUMBER} = 1",
+                        null,
+                        "${ContactsContract.Contacts.SORT_KEY_PRIMARY} ASC"
+                    )
+                
+                    if (cursor != null) {
+                        val totalContacts = cursor.count
+                        Log.d(TAG, "Toplam $totalContacts kişi bulundu")
+                            
+                        val contactsMap = mutableMapOf<String, WritableMap>()
+                        var processedCount = 0
                         
-                        if (!contactsMap.containsKey(contactId)) {
-                            val contact: WritableMap = Arguments.createMap()
-                            
-                            contact.putString("recordID", contactId)
-                            contact.putString("backTitle", "")
-                            
-                            val displayName: String? = cursor.getString(cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME))
-                            contact.putString("displayName", displayName ?: "")
-                            
-                            contact.putArray("emailAddresses", Arguments.createArray())
-                            contact.putArray("phoneNumbers", Arguments.createArray())
-                            contact.putArray("postalAddresses", Arguments.createArray())
-                            contact.putArray("imAddresses", Arguments.createArray())
-                            contact.putArray("urlAddresses", Arguments.createArray())
-                            
-                            contact.putString("familyName", "")
-                            contact.putString("givenName", "")
-                            contact.putString("middleName", "")
-                            contact.putString("jobTitle", "")
-                            contact.putString("company", "")
-                            contact.putBoolean("hasThumbnail", false)
-                            contact.putString("thumbnailPath", "")
-                            contact.putBoolean("isStarred", false)
-                            contact.putString("prefix", "")
-                            contact.putString("suffix", "")
-                            contact.putString("department", "")
-                            contact.putString("note", "")
-                            
-                            val birthday: WritableMap = Arguments.createMap()
-                            contact.putMap("birthday", birthday)
-                            
+                        while (cursor.moveToNext()) {
+                            val contactId = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts._ID))
+                            val contact = createBasicContactMap(cursor)
                             contactsMap[contactId] = contact
+                            
+                            processedCount++
+                            
+                            if (processedCount % BATCH_SIZE == 0) {
+                                Log.d(TAG, "$processedCount/$totalContacts kişi işlendi")
+                            }
                         }
-                    }
-                    cursor.close()
-                }
-                
-                for (contactId in contactsMap.keys) {
-                    val contact: WritableMap? = contactsMap[contactId]
-                    
-                    val nameCursor: Cursor? = contentResolver.query(
-                            ContactsContract.Data.CONTENT_URI,
-                            null,
-                            ContactsContract.Data.CONTACT_ID + " = ? AND " +
-                                    ContactsContract.Data.MIMETYPE + " = ?",
-                            arrayOf(contactId, CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE),
-                            null
-                    )
-                    
-                    if (nameCursor != null && nameCursor.moveToFirst()) {
-                        val familyName: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.FAMILY_NAME))
-                        val givenName: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.GIVEN_NAME))
-                        val middleName: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.MIDDLE_NAME))
-                        val prefix: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.PREFIX))
-                        val suffix: String? = nameCursor.getString(nameCursor.getColumnIndex(CommonDataKinds.StructuredName.SUFFIX))
                         
-                        contact?.putString("familyName", familyName ?: "")
-                        contact?.putString("givenName", givenName ?: "")
-                        contact?.putString("middleName", middleName ?: "")
-                        contact?.putString("prefix", prefix ?: "")
-                        contact?.putString("suffix", suffix ?: "")
-                        nameCursor.close()
-                    }
-                    
-                    val orgCursor: Cursor? = contentResolver.query(
-                            ContactsContract.Data.CONTENT_URI,
-                            null,
-                            ContactsContract.Data.CONTACT_ID + " = ? AND " +
-                                    ContactsContract.Data.MIMETYPE + " = ?",
-                            arrayOf(contactId, CommonDataKinds.Organization.CONTENT_ITEM_TYPE),
-                            null
-                    )
-                    
-                    if (orgCursor != null && orgCursor.moveToFirst()) {
-                        val company: String? = orgCursor.getString(orgCursor.getColumnIndex(CommonDataKinds.Organization.COMPANY))
-                        val department: String? = orgCursor.getString(orgCursor.getColumnIndex(CommonDataKinds.Organization.DEPARTMENT))
-                        val title: String? = orgCursor.getString(orgCursor.getColumnIndex(CommonDataKinds.Organization.TITLE))
+                        enrichContactDetails(contactsMap, contentResolver)
                         
-                        contact?.putString("company", company ?: "")
-                        contact?.putString("department", department ?: "")
-                        contact?.putString("jobTitle", title ?: "")
-                        orgCursor.close()
-                    }
-                    
-                    val phoneCursor: Cursor? = contentResolver.query(
-                            CommonDataKinds.Phone.CONTENT_URI,
-                            null,
-                            CommonDataKinds.Phone.CONTACT_ID + " = ?",
-                            arrayOf(contactId),
-                            null
-                    )
-                    
-                    val phoneNumbers: WritableArray = Arguments.createArray()
-                    if (phoneCursor != null) {
-                        while (phoneCursor.moveToNext()) {
-                            val phoneNumber: WritableMap = Arguments.createMap()
-                            val number: String = phoneCursor.getString(phoneCursor.getColumnIndex(CommonDataKinds.Phone.NUMBER))
-                            val type: Int = phoneCursor.getInt(phoneCursor.getColumnIndex(CommonDataKinds.Phone.TYPE))
-                            val label: String
-                            
-                            when (type) {
-                                CommonDataKinds.Phone.TYPE_HOME -> label = "home"
-                                CommonDataKinds.Phone.TYPE_WORK -> label = "work"
-                                CommonDataKinds.Phone.TYPE_MOBILE -> label = "mobile"
-                                else -> label = "other"
-                            }
-                            
-                            phoneNumber.putString("label", label)
-                            phoneNumber.putString("number", number)
-                            phoneNumbers.pushMap(phoneNumber)
+                        for (contact in contactsMap.values) {
+                            contacts.pushMap(contact)
                         }
-                        phoneCursor.close()
-                    }
-                    contact?.putArray("phoneNumbers", phoneNumbers)
-                    
-                    val emailCursor: Cursor? = contentResolver.query(
-                            CommonDataKinds.Email.CONTENT_URI,
-                            null,
-                            CommonDataKinds.Email.CONTACT_ID + " = ?",
-                            arrayOf(contactId),
-                            null
-                    )
-                    
-                    val emailAddresses: WritableArray = Arguments.createArray()
-                    if (emailCursor != null) {
-                        while (emailCursor.moveToNext()) {
-                            val emailAddress: WritableMap = Arguments.createMap()
-                            val email: String = emailCursor.getString(emailCursor.getColumnIndex(CommonDataKinds.Email.ADDRESS))
-                            val type: Int = emailCursor.getInt(emailCursor.getColumnIndex(CommonDataKinds.Email.TYPE))
-                            val label: String
-                            
-                            when (type) {
-                                CommonDataKinds.Email.TYPE_HOME -> label = "home"
-                                CommonDataKinds.Email.TYPE_WORK -> label = "work"
-                                else -> label = "other"
-                            }
-                            
-                            emailAddress.putString("label", label)
-                            emailAddress.putString("email", email)
-                            emailAddresses.pushMap(emailAddress)
+                        
+                        val endTime = System.currentTimeMillis()
+                        val duration = (endTime - startTime) / 1000.0
+                        Log.d(TAG, "Rehber çekme tamamlandı: ${contacts.size()} kişi, $duration saniye sürdü")
+                        
+                        reactContext.runOnUiQueueThread {
+                            promise.resolve(contacts)
                         }
-                        emailCursor.close()
-                    }
-                    contact?.putArray("emailAddresses", emailAddresses)
-                    
-                    val addressCursor: Cursor? = contentResolver.query(
-                            CommonDataKinds.StructuredPostal.CONTENT_URI,
-                            null,
-                            CommonDataKinds.StructuredPostal.CONTACT_ID + " = ?",
-                            arrayOf(contactId),
-                            null
-                    )
-                    
-                    val postalAddresses: WritableArray = Arguments.createArray()
-                    if (addressCursor != null) {
-                        while (addressCursor.moveToNext()) {
-                            val postalAddress: WritableMap = Arguments.createMap()
-                            val street: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.STREET))
-                            val city: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.CITY))
-                            val state: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.REGION))
-                            val postCode: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.POSTCODE))
-                            val country: String? = addressCursor.getString(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.COUNTRY))
-                            val type: Int = addressCursor.getInt(addressCursor.getColumnIndex(CommonDataKinds.StructuredPostal.TYPE))
-                            val label: String
-                            
-                            when (type) {
-                                CommonDataKinds.StructuredPostal.TYPE_HOME -> label = "home"
-                                CommonDataKinds.StructuredPostal.TYPE_WORK -> label = "work"
-                                else -> label = "other"
-                            }
-                            
-                            postalAddress.putString("label", label)
-                            postalAddress.putString("street", street ?: "")
-                            postalAddress.putString("city", city ?: "")
-                            postalAddress.putString("state", state ?: "")
-                            postalAddress.putString("postCode", postCode ?: "")
-                            postalAddress.putString("country", country ?: "")
-                            postalAddresses.pushMap(postalAddress)
+                    } else {
+                        reactContext.runOnUiQueueThread {
+                            promise.reject("cursor_error", "Cursor is null")
                         }
-                        addressCursor.close()
                     }
-                    contact?.putArray("postalAddresses", postalAddresses)
-                    
-                    val noteCursor: Cursor? = contentResolver.query(
-                            ContactsContract.Data.CONTENT_URI,
-                            null,
-                            ContactsContract.Data.CONTACT_ID + " = ? AND " +
-                                    ContactsContract.Data.MIMETYPE + " = ?",
-                            arrayOf(contactId, CommonDataKinds.Note.CONTENT_ITEM_TYPE),
-                            null
-                    )
-                    
-                    if (noteCursor != null && noteCursor.moveToFirst()) {
-                        val note: String? = noteCursor.getString(noteCursor.getColumnIndex(CommonDataKinds.Note.NOTE))
-                        contact?.putString("note", note ?: "")
-                        noteCursor.close()
-                    }
-                    
-                    val imCursor: Cursor? = contentResolver.query(
-                            ContactsContract.Data.CONTENT_URI,
-                            null,
-                            ContactsContract.Data.CONTACT_ID + " = ? AND " +
-                                    ContactsContract.Data.MIMETYPE + " = ?",
-                            arrayOf(contactId, CommonDataKinds.Im.CONTENT_ITEM_TYPE),
-                            null
-                    )
-                    
-                    val imAddresses: WritableArray = Arguments.createArray()
-                    if (imCursor != null) {
-                        while (imCursor.moveToNext()) {
-                            val imAddress: WritableMap = Arguments.createMap()
-                            val username: String? = imCursor.getString(imCursor.getColumnIndex(CommonDataKinds.Im.DATA))
-                            val protocolType: Int = imCursor.getInt(imCursor.getColumnIndex(CommonDataKinds.Im.PROTOCOL))
-                            val service: String
-                            
-                            when (protocolType) {
-                                CommonDataKinds.Im.PROTOCOL_AIM -> service = "AIM"
-                                CommonDataKinds.Im.PROTOCOL_MSN -> service = "MSN"
-                                CommonDataKinds.Im.PROTOCOL_YAHOO -> service = "Yahoo"
-                                CommonDataKinds.Im.PROTOCOL_SKYPE -> service = "Skype"
-                                CommonDataKinds.Im.PROTOCOL_QQ -> service = "QQ"
-                                CommonDataKinds.Im.PROTOCOL_GOOGLE_TALK -> service = "Google Talk"
-                                CommonDataKinds.Im.PROTOCOL_ICQ -> service = "ICQ"
-                                CommonDataKinds.Im.PROTOCOL_JABBER -> service = "Jabber"
-                                else -> service = "Other"
-                            }
-                            
-                            imAddress.putString("service", service)
-                            imAddress.putString("username", username ?: "")
-                            imAddresses.pushMap(imAddress)
-                        }
-                        imCursor.close()
-                    }
-                    contact?.putArray("imAddresses", imAddresses)
-                    
-                    val bdayCursor: Cursor? = contentResolver.query(
-                            ContactsContract.Data.CONTENT_URI,
-                            null,
-                            ContactsContract.Data.CONTACT_ID + " = ? AND " +
-                                    ContactsContract.Data.MIMETYPE + " = ?",
-                            arrayOf(contactId, CommonDataKinds.Event.CONTENT_ITEM_TYPE),
-                            null
-                    )
-                    
-                    val birthday: WritableMap = Arguments.createMap()
-                    if (bdayCursor != null) {
-                        while (bdayCursor.moveToNext()) {
-                            val type: Int = bdayCursor.getInt(bdayCursor.getColumnIndex(CommonDataKinds.Event.TYPE))
-                            if (type == CommonDataKinds.Event.TYPE_BIRTHDAY) {
-                                val startDate: String? = bdayCursor.getString(bdayCursor.getColumnIndex(CommonDataKinds.Event.START_DATE))
-                                if (startDate != null) {
-                                    val parts: Array<String> = startDate.split("-").toTypedArray()
-                                    if (parts.size >= 3) {
-                                        try {
-                                            val year: Int = parts[0].toInt()
-                                            val month: Int = parts[1].toInt()
-                                            val day: Int = parts[2].toInt()
-                                            
-                                            birthday.putInt("year", year)
-                                            birthday.putInt("month", month)
-                                            birthday.putInt("day", day)
-                                        } catch (e: NumberFormatException) {
-                                        }
-                                    }
-                                }
-                                break
-                            }
-                        }
-                        bdayCursor.close()
-                    }
-                    contact?.putMap("birthday", birthday)
-                    
-                    contacts.pushMap(contact)
+                } finally {
+                    cursor?.close()
                 }
-                
-                promise.resolve(contacts)
             } catch (e: Exception) {
-                promise.reject("fetch_error", "Could not fetch contacts: " + e.message)
+                Log.e(TAG, "Rehber çekme hatası: ${e.message}", e)
+                reactContext.runOnUiQueueThread {
+                    promise.reject("fetch_error", "Could not fetch contacts: ${e.message}")
+                }
             }
-        } else {
-            promise.reject("permission_denied", "Contacts permission not granted")
+        }
+    }
+                
+    private fun createBasicContactMap(cursor: Cursor): WritableMap {
+        val contact = Arguments.createMap()
+        
+        val contactId = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts._ID))
+        val lookupKey = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts.LOOKUP_KEY))
+        val displayName = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts.DISPLAY_NAME_PRIMARY))
+        val photoUri = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_URI))
+        val thumbnailUri = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_THUMBNAIL_URI))
+        val starred = cursor.getInt(cursor.getColumnIndexOrThrow(ContactsContract.Contacts.STARRED)) == 1
+        
+        contact.putString("recordID", contactId)
+        contact.putString("lookupKey", lookupKey ?: "")
+        contact.putString("displayName", displayName ?: "")
+        contact.putBoolean("hasThumbnail", photoUri != null || thumbnailUri != null)
+        contact.putString("thumbnailPath", thumbnailUri ?: "")
+        contact.putString("photoUri", photoUri ?: "")
+        contact.putBoolean("isStarred", starred)
+        
+        contact.putArray("phoneNumbers", Arguments.createArray())
+        contact.putArray("emailAddresses", Arguments.createArray())
+        
+        contact.putString("familyName", "")
+        contact.putString("givenName", "")
+        contact.putString("middleName", "")
+        contact.putString("jobTitle", "")
+        contact.putString("company", "")
+        contact.putString("department", "")
+        contact.putString("note", "")
+        contact.putString("prefix", "")
+        contact.putString("suffix", "")
+        
+        contact.putMap("birthday", Arguments.createMap())
+        
+        return contact
+    }
+                    
+    private fun enrichContactDetails(contactsMap: MutableMap<String, WritableMap>, contentResolver: ContentResolver) {
+        if (contactsMap.isEmpty()) return
+                    
+        val contactIds = contactsMap.keys.toList()
+        val batchSize = 100 
+                    
+        for (i in contactIds.indices step batchSize) {
+            val endIndex = minOf(i + batchSize, contactIds.size)
+            val batch = contactIds.subList(i, endIndex)
+            fetchStructuredNames(batch, contactsMap, contentResolver)
+        }
+                    
+        for (i in contactIds.indices step batchSize) {
+            val endIndex = minOf(i + batchSize, contactIds.size)
+            val batch = contactIds.subList(i, endIndex)
+            fetchPhoneNumbers(batch, contactsMap, contentResolver)
+        }
+                        
+        for (i in contactIds.indices step batchSize) {
+            val endIndex = minOf(i + batchSize, contactIds.size)
+            val batch = contactIds.subList(i, endIndex)
+            fetchEmails(batch, contactsMap, contentResolver)
+        }
+    }
+                    
+    private fun fetchStructuredNames(contactIds: List<String>, contactsMap: MutableMap<String, WritableMap>, contentResolver: ContentResolver) {
+        if (contactIds.isEmpty()) return
+                    
+        val selection = StringBuilder("${ContactsContract.Data.MIMETYPE} = ? AND ${ContactsContract.Data.CONTACT_ID} IN (")
+        selection.append(contactIds.joinToString(separator = ",") { "?" })
+        selection.append(")")
+                            
+        val selectionArgs = arrayOf(CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE) + contactIds.toTypedArray()
+                    
+        var cursor: Cursor? = null
+        try {
+            cursor = contentResolver.query(
+                ContactsContract.Data.CONTENT_URI,
+                null,
+                selection.toString(),
+                selectionArgs,
+                null
+            )
+            
+            if (cursor != null) {
+                while (cursor.moveToNext()) {
+                    val contactId = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Data.CONTACT_ID))
+                    val contact = contactsMap[contactId] ?: continue
+                    
+                    val familyName = cursor.getString(cursor.getColumnIndexOrThrow(CommonDataKinds.StructuredName.FAMILY_NAME)) ?: ""
+                    val givenName = cursor.getString(cursor.getColumnIndexOrThrow(CommonDataKinds.StructuredName.GIVEN_NAME)) ?: ""
+                    val middleName = cursor.getString(cursor.getColumnIndexOrThrow(CommonDataKinds.StructuredName.MIDDLE_NAME)) ?: ""
+                    val prefix = cursor.getString(cursor.getColumnIndexOrThrow(CommonDataKinds.StructuredName.PREFIX)) ?: ""
+                    val suffix = cursor.getString(cursor.getColumnIndexOrThrow(CommonDataKinds.StructuredName.SUFFIX)) ?: ""
+                    
+                    contact.putString("familyName", familyName)
+                    contact.putString("givenName", givenName)
+                    contact.putString("middleName", middleName)
+                    contact.putString("prefix", prefix)
+                    contact.putString("suffix", suffix)
+                }
+            }
+        } finally {
+            cursor?.close()
+        }
+    }
+                            
+    private fun fetchPhoneNumbers(contactIds: List<String>, contactsMap: MutableMap<String, WritableMap>, contentResolver: ContentResolver) {
+        if (contactIds.isEmpty()) return
+        
+        val selection = StringBuilder("${ContactsContract.CommonDataKinds.Phone.CONTACT_ID} IN (")
+        selection.append(contactIds.joinToString(separator = ",") { "?" })
+        selection.append(")")
+        
+        var cursor: Cursor? = null
+        try {
+            cursor = contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                null,
+                selection.toString(),
+                contactIds.toTypedArray(),
+                null
+            )
+            
+            if (cursor != null) {
+                while (cursor.moveToNext()) {
+                    val contactId = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.CONTACT_ID))
+                    val contact = contactsMap[contactId] ?: continue
+                    
+                    val phoneNumbers = contact.getArray("phoneNumbers")
+                    val phoneNumber = Arguments.createMap()
+                    
+                    val number = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER))
+                    val type = cursor.getInt(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.TYPE))
+                    val label: String
+
+                    when (type) {
+                        CommonDataKinds.Phone.TYPE_HOME -> label = "home"
+                        CommonDataKinds.Phone.TYPE_WORK -> label = "work"
+                        CommonDataKinds.Phone.TYPE_MOBILE -> label = "mobile"
+                        else -> label = "other"
+                    }
+                    
+                    phoneNumber.putString("label", label)
+                    phoneNumber.putString("number", number)
+                            
+                    val updatedPhoneNumbers = Arguments.createArray()
+                    if (phoneNumbers != null) {
+                        for (i in 0 until phoneNumbers.size()) {
+                            phoneNumbers.getMap(i)?.let { updatedPhoneNumbers.pushMap(it) }
+                        }
+                    }
+                    updatedPhoneNumbers.pushMap(phoneNumber)
+                    
+                    contact.putArray("phoneNumbers", updatedPhoneNumbers)
+                }
+            }
+        } finally {
+            cursor?.close()
+        }
+    }
+                    
+    private fun fetchEmails(contactIds: List<String>, contactsMap: MutableMap<String, WritableMap>, contentResolver: ContentResolver) {
+        if (contactIds.isEmpty()) return
+                    
+        val selection = StringBuilder("${ContactsContract.CommonDataKinds.Email.CONTACT_ID} IN (")
+        selection.append(contactIds.joinToString(separator = ",") { "?" })
+        selection.append(")")
+                            
+        var cursor: Cursor? = null
+        try {
+            cursor = contentResolver.query(
+                ContactsContract.CommonDataKinds.Email.CONTENT_URI,
+                null,
+                selection.toString(),
+                contactIds.toTypedArray(),
+                null
+            )
+            
+            if (cursor != null) {
+                while (cursor.moveToNext()) {
+                    val contactId = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.CONTACT_ID))
+                    val contact = contactsMap[contactId] ?: continue
+                    
+                    val emailAddresses = contact.getArray("emailAddresses")
+                    val emailAddress = Arguments.createMap()
+                    
+                    val email = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.ADDRESS))
+                    val type = cursor.getInt(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.TYPE))
+                    val label: String
+
+                    when (type) {
+                        CommonDataKinds.Email.TYPE_HOME -> label = "home"
+                        CommonDataKinds.Email.TYPE_WORK -> label = "work"
+                        else -> label = "other"
+                    }
+                    
+                    emailAddress.putString("label", label)
+                    emailAddress.putString("email", email)
+                    
+                    val updatedEmailAddresses = Arguments.createArray()
+                    if (emailAddresses != null) {
+                        for (i in 0 until emailAddresses.size()) {
+                            emailAddresses.getMap(i)?.let { updatedEmailAddresses.pushMap(it) }
+                        }
+                    }
+                    updatedEmailAddresses.pushMap(emailAddress)
+                    
+                    contact.putArray("emailAddresses", updatedEmailAddresses)
+                }
+            }
+        } finally {
+            cursor?.close()
         }
     }
 
