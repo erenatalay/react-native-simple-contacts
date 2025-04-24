@@ -1,310 +1,414 @@
-import Foundation
-import Contacts
-import React
+package com.simplecontacts
 
-@objc(ContactsModule)
-class ContactsModule: NSObject {
+import android.Manifest
+import android.content.ContentResolver
+import android.content.pm.PackageManager
+import android.database.Cursor
+import android.provider.ContactsContract
+import android.provider.ContactsContract.CommonDataKinds
+import androidx.core.content.ContextCompat
+import androidx.core.app.ActivityCompat
+import android.util.Log
+import android.net.Uri
+import android.os.AsyncTask
+
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.Promise
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.ReactContextBaseJavaModule
+import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.WritableArray
+import com.facebook.react.bridge.WritableMap
+import com.facebook.react.modules.core.PermissionAwareActivity
+import com.facebook.react.modules.core.PermissionListener
+
+import java.util.ArrayList
+import java.util.HashMap
+import java.util.Map
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+
+class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(), PermissionListener {
+    private val reactContext: ReactApplicationContext = reactContext
+    private var permissionPromise: Promise? = null
+    private val TAG = "ContactsModule"
+    private val executor = Executors.newFixedThreadPool(2)
     
-    private let contactStore = CNContactStore()
-    
-    @objc
-    func getContacts(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        checkPermission({ (permissionStatus) in
-            if permissionStatus as? String == "granted" {
-                self.fetchAllContactsAfterPermissionCheck(resolve: resolve, reject: reject)
-            } else if permissionStatus as? String == "limited" {
-                self.fetchAllContactsAfterPermissionCheck(resolve: resolve, reject: reject)
-            } else {
-                DispatchQueue.main.async {
-                    reject("permission_denied", "No permission to access contacts: \(permissionStatus as? String ?? "unknown")", nil)
-                }
-            }
-        }, reject: { (code, message, error) in
-            DispatchQueue.main.async {
-                reject(code, message, error)
-            }
-        })
+    companion object {
+        private const val PERMISSION_REQUEST_CODE = 1
+        private const val BATCH_SIZE = 500
     }
-    private func fetchAllContactsAfterPermissionCheck(resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-            guard let self = self else {
-                DispatchQueue.main.async {
-                    reject("error", "Self is nil", nil)
-                }
-                return
-            }
-            
-            // Sadece ihtiyaç duyulan anahtar bilgileri içeren kısaltılmış liste
-            let keysToFetch: [CNKeyDescriptor] = [
-                CNContactIdentifierKey as CNKeyDescriptor,
-                CNContactGivenNameKey as CNKeyDescriptor,
-                CNContactFamilyNameKey as CNKeyDescriptor,
-                CNContactPhoneNumbersKey as CNKeyDescriptor,
-                CNContactEmailAddressesKey as CNKeyDescriptor,
-                CNContactOrganizationNameKey as CNKeyDescriptor
-            ]
-            
-            self.fetchAllContacts(keysToFetch: keysToFetch, resolve: resolve, reject: reject)
+
+    override fun getName(): String {
+        return "ContactsModule"
+    }
+
+    @ReactMethod
+    fun getContacts(promise: Promise) {
+        if (hasPermission()) {
+            fetchContactsOptimized(promise)
+        } else {
+            promise.reject("permission_denied", "Contacts permission not granted")
         }
     }
     
-    private func fetchAllContacts(keysToFetch: [CNKeyDescriptor], resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        let startTime = CFAbsoluteTimeGetCurrent()
+    private fun fetchContactsOptimized(promise: Promise) {
+        val startTime = System.currentTimeMillis()
         
-        let processingQueue = DispatchQueue(label: "com.simplecontacts.processing", attributes: .concurrent)
-        let resultQueue = DispatchQueue(label: "com.simplecontacts.results", attributes: .concurrent)
-        
-        let semaphore = DispatchSemaphore(value: 4) // Control level of concurrency
-        
-        do {
-            let request = CNContactFetchRequest(keysToFetch: keysToFetch)
-            
-            request.sortOrder = .givenName
-            
-            let batchSize = 200 
-            var results = [[String: Any]]()
-            var totalContacts = 0
-            
-            let group = DispatchGroup()
-            
-            var contactBuffer = [CNContact]()
-            
-            results.reserveCapacity(1000)
-            
-            try self.contactStore.enumerateContacts(with: request) { (contact, stopPointer) in
-                contactBuffer.append(contact)
-                totalContacts += 1
+        executor.execute {
+            try {
+                val contentResolver: ContentResolver = reactContext.contentResolver
+                val contacts: WritableArray = Arguments.createArray()
                 
-                if contactBuffer.count >= batchSize {
-                    let contactBatch = contactBuffer
-                    contactBuffer.removeAll(keepingCapacity: true)
-                    
-                    group.enter()
-                    semaphore.wait() 
-                    
-                    processingQueue.async {
-                        let processedBatch = self.processContactBatch(contacts: contactBatch)
+                val projection = arrayOf(
+                    ContactsContract.Contacts._ID,
+                    ContactsContract.Contacts.LOOKUP_KEY,
+                    ContactsContract.Contacts.DISPLAY_NAME_PRIMARY,
+                    ContactsContract.Contacts.PHOTO_URI,
+                    ContactsContract.Contacts.PHOTO_THUMBNAIL_URI,
+                    ContactsContract.Contacts.STARRED
+                )
+                
+                val contactsUri = ContactsContract.Contacts.CONTENT_URI
+                var cursor: Cursor? = null
+                
+                try {
+                    cursor = contentResolver.query(
+                        contactsUri,
+                        projection,
+                        "${ContactsContract.Contacts.HAS_PHONE_NUMBER} = 1",
+                        null,
+                        "${ContactsContract.Contacts.SORT_KEY_PRIMARY} ASC"
+                    )
+                
+                    if (cursor != null) {
+                        val totalContacts = cursor.count
+                        Log.d(TAG, "Toplam $totalContacts kişi bulundu")
+                            
+                        val contactsMap = mutableMapOf<String, WritableMap>()
+                        var processedCount = 0
                         
-                        resultQueue.async {
-                            results.append(contentsOf: processedBatch)
-                            semaphore.signal() 
-                            group.leave()
+                        while (cursor.moveToNext()) {
+                            val contactId = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts._ID))
+                            val contact = createBasicContactMap(cursor)
+                            contactsMap[contactId] = contact
+                            
+                            processedCount++
+                            
+                            if (processedCount % BATCH_SIZE == 0) {
+                                Log.d(TAG, "$processedCount/$totalContacts kişi işlendi")
+                            }
+                        }
+                        
+                        enrichContactDetails(contactsMap, contentResolver)
+                        
+                        for (contact in contactsMap.values) {
+                            contacts.pushMap(contact)
+                        }
+                        
+                        val endTime = System.currentTimeMillis()
+                        val duration = (endTime - startTime) / 1000.0
+                        Log.d(TAG, "Rehber çekme tamamlandı: ${contacts.size()} kişi, $duration saniye sürdü")
+                        
+                        reactContext.runOnUiQueueThread {
+                            promise.resolve(contacts)
+                        }
+                    } else {
+                        reactContext.runOnUiQueueThread {
+                            promise.reject("cursor_error", "Cursor is null")
                         }
                     }
+                } finally {
+                    cursor?.close()
                 }
-                
-                if totalContacts % 1000 == 0 {
-                    let progress = totalContacts
-                    DispatchQueue.main.async {
-                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "Rehber çekme hatası: ${e.message}", e)
+                reactContext.runOnUiQueueThread {
+                    promise.reject("fetch_error", "Could not fetch contacts: ${e.message}")
                 }
             }
-            
-            if !contactBuffer.isEmpty {
-                group.enter()
-                semaphore.wait()
+        }
+    }
                 
-                processingQueue.async {
-                    let processedBatch = self.processContactBatch(contacts: contactBuffer)
+    private fun createBasicContactMap(cursor: Cursor): WritableMap {
+        val contact = Arguments.createMap()
+        
+        val contactId = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts._ID))
+        val lookupKey = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts.LOOKUP_KEY))
+        val displayName = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts.DISPLAY_NAME_PRIMARY))
+        val photoUri = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_URI))
+        val thumbnailUri = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts.PHOTO_THUMBNAIL_URI))
+        val starred = cursor.getInt(cursor.getColumnIndexOrThrow(ContactsContract.Contacts.STARRED)) == 1
+        
+        contact.putString("recordID", contactId)
+        contact.putString("lookupKey", lookupKey ?: "")
+        contact.putString("displayName", displayName ?: "")
+        contact.putBoolean("hasThumbnail", photoUri != null || thumbnailUri != null)
+        contact.putString("thumbnailPath", thumbnailUri ?: "")
+        contact.putString("photoUri", photoUri ?: "")
+        contact.putBoolean("isStarred", starred)
+        
+        contact.putArray("phoneNumbers", Arguments.createArray())
+        contact.putArray("emailAddresses", Arguments.createArray())
+        
+        contact.putString("familyName", "")
+        contact.putString("givenName", "")
+        contact.putString("middleName", "")
+        contact.putString("jobTitle", "")
+        contact.putString("company", "")
+        contact.putString("department", "")
+        contact.putString("note", "")
+        contact.putString("prefix", "")
+        contact.putString("suffix", "")
+        
+        contact.putMap("birthday", Arguments.createMap())
+        
+        return contact
+    }
                     
-                    resultQueue.async {
-                        results.append(contentsOf: processedBatch)
-                        semaphore.signal()
-                        group.leave()
-                    }
+    private fun enrichContactDetails(contactsMap: MutableMap<String, WritableMap>, contentResolver: ContentResolver) {
+        if (contactsMap.isEmpty()) return
+                    
+        val contactIds = contactsMap.keys.toList()
+        val batchSize = 100 
+                    
+        for (i in contactIds.indices step batchSize) {
+            val endIndex = minOf(i + batchSize, contactIds.size)
+            val batch = contactIds.subList(i, endIndex)
+            fetchStructuredNames(batch, contactsMap, contentResolver)
+        }
+                    
+        for (i in contactIds.indices step batchSize) {
+            val endIndex = minOf(i + batchSize, contactIds.size)
+            val batch = contactIds.subList(i, endIndex)
+            fetchPhoneNumbers(batch, contactsMap, contentResolver)
+        }
+                        
+        for (i in contactIds.indices step batchSize) {
+            val endIndex = minOf(i + batchSize, contactIds.size)
+            val batch = contactIds.subList(i, endIndex)
+            fetchEmails(batch, contactsMap, contentResolver)
+        }
+    }
+                    
+    private fun fetchStructuredNames(contactIds: List<String>, contactsMap: MutableMap<String, WritableMap>, contentResolver: ContentResolver) {
+        if (contactIds.isEmpty()) return
+                    
+        val selection = StringBuilder("${ContactsContract.Data.MIMETYPE} = ? AND ${ContactsContract.Data.CONTACT_ID} IN (")
+        selection.append(contactIds.joinToString(separator = ",") { "?" })
+        selection.append(")")
+                            
+        val selectionArgs = arrayOf(CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE) + contactIds.toTypedArray()
+                    
+        var cursor: Cursor? = null
+        try {
+            cursor = contentResolver.query(
+                ContactsContract.Data.CONTENT_URI,
+                null,
+                selection.toString(),
+                selectionArgs,
+                null
+            )
+            
+            if (cursor != null) {
+                while (cursor.moveToNext()) {
+                    val contactId = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Data.CONTACT_ID))
+                    val contact = contactsMap[contactId] ?: continue
+                    
+                    val familyName = cursor.getString(cursor.getColumnIndexOrThrow(CommonDataKinds.StructuredName.FAMILY_NAME)) ?: ""
+                    val givenName = cursor.getString(cursor.getColumnIndexOrThrow(CommonDataKinds.StructuredName.GIVEN_NAME)) ?: ""
+                    val middleName = cursor.getString(cursor.getColumnIndexOrThrow(CommonDataKinds.StructuredName.MIDDLE_NAME)) ?: ""
+                    val prefix = cursor.getString(cursor.getColumnIndexOrThrow(CommonDataKinds.StructuredName.PREFIX)) ?: ""
+                    val suffix = cursor.getString(cursor.getColumnIndexOrThrow(CommonDataKinds.StructuredName.SUFFIX)) ?: ""
+                    
+                    contact.putString("familyName", familyName)
+                    contact.putString("givenName", givenName)
+                    contact.putString("middleName", middleName)
+                    contact.putString("prefix", prefix)
+                    contact.putString("suffix", suffix)
                 }
             }
+        } finally {
+            cursor?.close()
+        }
+    }
+                            
+    private fun fetchPhoneNumbers(contactIds: List<String>, contactsMap: MutableMap<String, WritableMap>, contentResolver: ContentResolver) {
+        if (contactIds.isEmpty()) return
+        
+        val selection = StringBuilder("${ContactsContract.CommonDataKinds.Phone.CONTACT_ID} IN (")
+        selection.append(contactIds.joinToString(separator = ",") { "?" })
+        selection.append(")")
+        
+        var cursor: Cursor? = null
+        try {
+            cursor = contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                null,
+                selection.toString(),
+                contactIds.toTypedArray(),
+                null
+            )
             
-            group.wait()
-            
-            let endTime = CFAbsoluteTimeGetCurrent()
-            let duration = endTime - startTime
-            
-            DispatchQueue.main.async {
-                resolve(results)
+            if (cursor != null) {
+                while (cursor.moveToNext()) {
+                    val contactId = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.CONTACT_ID))
+                    val contact = contactsMap[contactId] ?: continue
+                    
+                    val phoneNumbers = contact.getArray("phoneNumbers")
+                    val phoneNumber = Arguments.createMap()
+                    
+                    val number = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER))
+                    val type = cursor.getInt(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.TYPE))
+                    val label: String
+
+                    when (type) {
+                        CommonDataKinds.Phone.TYPE_HOME -> label = "home"
+                        CommonDataKinds.Phone.TYPE_WORK -> label = "work"
+                        CommonDataKinds.Phone.TYPE_MOBILE -> label = "mobile"
+                        else -> label = "other"
+                    }
+                    
+                    phoneNumber.putString("label", label)
+                    phoneNumber.putString("number", number)
+                            
+                    val updatedPhoneNumbers = Arguments.createArray()
+                    if (phoneNumbers != null) {
+                        for (i in 0 until phoneNumbers.size()) {
+                            phoneNumbers.getMap(i)?.let { updatedPhoneNumbers.pushMap(it) }
+                        }
+                    }
+                    updatedPhoneNumbers.pushMap(phoneNumber)
+                    
+                    contact.putArray("phoneNumbers", updatedPhoneNumbers)
+                }
             }
-        } catch {
-            let endTime = CFAbsoluteTimeGetCurrent()
-            let duration = endTime - startTime
+        } finally {
+            cursor?.close()
+        }
+    }
+                    
+    private fun fetchEmails(contactIds: List<String>, contactsMap: MutableMap<String, WritableMap>, contentResolver: ContentResolver) {
+        if (contactIds.isEmpty()) return
+                    
+        val selection = StringBuilder("${ContactsContract.CommonDataKinds.Email.CONTACT_ID} IN (")
+        selection.append(contactIds.joinToString(separator = ",") { "?" })
+        selection.append(")")
+                            
+        var cursor: Cursor? = null
+        try {
+            cursor = contentResolver.query(
+                ContactsContract.CommonDataKinds.Email.CONTENT_URI,
+                null,
+                selection.toString(),
+                contactIds.toTypedArray(),
+                null
+            )
             
-            DispatchQueue.main.async {
-                reject("fetch_failed", "Failed to fetch contacts: \(error.localizedDescription)", error)
+            if (cursor != null) {
+                while (cursor.moveToNext()) {
+                    val contactId = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.CONTACT_ID))
+                    val contact = contactsMap[contactId] ?: continue
+                    
+                    val emailAddresses = contact.getArray("emailAddresses")
+                    val emailAddress = Arguments.createMap()
+                    
+                    val email = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.ADDRESS))
+                    val type = cursor.getInt(cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.TYPE))
+                    val label: String
+
+                    when (type) {
+                        CommonDataKinds.Email.TYPE_HOME -> label = "home"
+                        CommonDataKinds.Email.TYPE_WORK -> label = "work"
+                        else -> label = "other"
+                    }
+                    
+                    emailAddress.putString("label", label)
+                    emailAddress.putString("email", email)
+                    
+                    val updatedEmailAddresses = Arguments.createArray()
+                    if (emailAddresses != null) {
+                        for (i in 0 until emailAddresses.size()) {
+                            emailAddresses.getMap(i)?.let { updatedEmailAddresses.pushMap(it) }
+                        }
+                    }
+                    updatedEmailAddresses.pushMap(emailAddress)
+                    
+                    contact.putArray("emailAddresses", updatedEmailAddresses)
+                }
             }
+        } finally {
+            cursor?.close()
         }
     }
 
-    private func processContactBatch(contacts: [CNContact]) -> [[String: Any]] {
-        var results = [[String: Any]]()
-        results.reserveCapacity(contacts.count)
-        
-        for contact in contacts {
-            let contactDict = self.contactToDict(contact: contact)
-            results.append(contactDict)
+    @ReactMethod
+    fun checkPermission(promise: Promise) {
+        try {
+            val permissionStatus = when {
+                PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(
+                    reactContext,
+                    Manifest.permission.READ_CONTACTS
+                ) -> "granted"
+                ActivityCompat.shouldShowRequestPermissionRationale(
+                    reactContext.currentActivity!!,
+                    Manifest.permission.READ_CONTACTS
+                ) -> "denied"
+                else -> "undetermined"  
+            }
+            promise.resolve(permissionStatus)
+        } catch (e: Exception) {
+            promise.reject("check_permission_error", e.message)
         }
-        
-        return results
-    }
-    
-    private func contactToLightDict(contact: CNContact) -> [String: Any] {
-        var result: [String: Any] = [
-            "recordID": contact.identifier,
-            "givenName": contact.givenName,
-            "familyName": contact.familyName
-        ]
-        
-        let fullName = [contact.givenName, contact.familyName].filter { !$0.isEmpty }.joined(separator: " ")
-        result["displayName"] = fullName.isEmpty ? "No Name" : fullName
-        
-        if let firstPhone = contact.phoneNumbers.first {
-            result["phoneNumbers"] = [[
-                "label": CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: firstPhone.label ?? ""),
-                "number": firstPhone.value.stringValue
-            ]]
-        } else {
-            result["phoneNumbers"] = []
-        }
-        
-        if let firstEmail = contact.emailAddresses.first {
-            result["emailAddresses"] = [[
-                "label": firstEmail.label != nil ? CNLabeledValue<NSString>.localizedString(forLabel: firstEmail.label!) : "other",
-                "email": firstEmail.value as String
-            ]]
-        } else {
-            result["emailAddresses"] = []
-        }
-        
-        return result
     }
 
-    private func contactToDict(contact: CNContact) -> [String: Any] {
-        var result = [String: Any]()
+    @ReactMethod
+    fun requestPermission(promise: Promise) {
+        this.permissionPromise = promise
         
-        result["recordID"] = contact.identifier
-        
-        let firstName = contact.givenName
-        let lastName = contact.familyName
-        let fullName = [firstName, lastName].filter { !$0.isEmpty }.joined(separator: " ")
-        result["displayName"] = fullName.isEmpty ? "No Name" : fullName
-        
-        result["givenName"] = firstName
-        result["familyName"] = lastName
-        
-        result["company"] = contact.organizationName
-        
-        var phoneNumbers = [[String: String]]()
-        for phone in contact.phoneNumbers {
-            phoneNumbers.append([
-                "label": CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: phone.label ?? ""),
-                "number": phone.value.stringValue
-            ])
-        }
-        result["phoneNumbers"] = phoneNumbers
-        
-        var emailAddresses = [[String: String]]()
-        for email in contact.emailAddresses {
-            emailAddresses.append([
-                "label": email.label != nil ? CNLabeledValue<NSString>.localizedString(forLabel: email.label!) : "other",
-                "email": email.value as String
-            ])
-        }
-        result["emailAddresses"] = emailAddresses
-        
-        return result
-    }
-    
-    @objc
-    func checkPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        let authStatus = CNContactStore.authorizationStatus(for: .contacts)
-        
-        
-        if authStatus.rawValue == 3 {
-            resolve("limited")
+        if (hasPermission()) {
+            promise.resolve("granted")  
             return
         }
         
-        switch authStatus {
-        case .authorized:
-            resolve("granted")
+        val activity = reactContext.currentActivity
+        if (activity == null) {
+            promise.reject("activity_error", "Activity is null")
             return
-        case .denied:
-            resolve("denied")
-            return
-        case .notDetermined:
-            resolve("undetermined")
-            return
-        case .restricted:
-            if containerAccessAvailable() {
-                resolve("limited")
-                return
+        }
+        
+        if (activity is PermissionAwareActivity) {
+            try {
+                activity.requestPermissions(
+                    arrayOf(Manifest.permission.READ_CONTACTS),
+                    PERMISSION_REQUEST_CODE,
+                    this
+                )
+            } catch (e: Exception) {
+                promise.reject("request_permission_error", e.message)
             }
-            resolve("denied")
-            return
-        case .limited:
-            resolve("limited")
-            return
-        @unknown default:
-            if containerAccessAvailable() {
-                resolve("limited")
+        } else {
+            promise.reject("activity_error", "Activity is not PermissionAwareActivity")
+        }
+    }
+
+    private fun hasPermission(): Boolean {
+        return PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(
+                reactContext,
+                Manifest.permission.READ_CONTACTS
+        )
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray): Boolean {
+        if (requestCode == PERMISSION_REQUEST_CODE && permissionPromise != null) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                permissionPromise!!.resolve("granted")  
             } else {
-                resolve("denied")
+                permissionPromise!!.resolve("denied")
             }
-            return
-        }
-    }
-
-    private func containerAccessAvailable() -> Bool {
-        do {
-            let _ = try contactStore.defaultContainerIdentifier()
+            permissionPromise = null
             return true
-        } catch {
-            return false
         }
-    }
-
-    @objc
-    func requestPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        contactStore.requestAccess(for: .contacts) { (granted, error) in
-            if let error = error {
-                DispatchQueue.main.async {
-                    reject("permission_error", "Error requesting contacts permission: \(error.localizedDescription)", error)
-                }
-                return
-            }
-            
-            DispatchQueue.main.async {
-                let authStatus = CNContactStore.authorizationStatus(for: .contacts)
-                
-                switch authStatus {
-                case .authorized:
-                    resolve("granted")
-                    
-                case .denied:
-                    resolve("denied")
-                    
-                case .restricted:
-                    resolve("denied")
-                    
-                case .notDetermined:
-                    resolve("undetermined")
-                    
-                default:
-                    if authStatus.rawValue == 3 {
-                        resolve("limited")
-                        return
-                    }
-                    
-                    if self.containerAccessAvailable() {
-                        resolve("limited")
-                    } else {
-                        resolve("denied")
-                    }
-                }
-            }
-        }
-    }
-  
-    @objc
-    static func requiresMainQueueSetup() -> Bool {
         return false
     }
 }

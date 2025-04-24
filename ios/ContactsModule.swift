@@ -1,5 +1,6 @@
 import Foundation
 import Contacts
+import React
 
 @objc(ContactsModule)
 class ContactsModule: NSObject {
@@ -211,96 +212,96 @@ class ContactsModule: NSObject {
         return result
     }
     
-@objc
-func checkPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-    let authStatus = CNContactStore.authorizationStatus(for: .contacts)
-    
-    
-    if authStatus.rawValue == 3 {
-        resolve("limited")
-        return
-    }
-    
-    switch authStatus {
-    case .authorized:
-        resolve("granted")
-        return
-    case .denied:
-        resolve("denied")
-        return
-    case .notDetermined:
-        resolve("undetermined")
-        return
-    case .restricted:
-        if containerAccessAvailable() {
+    @objc
+    func checkPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        let authStatus = CNContactStore.authorizationStatus(for: .contacts)
+        
+        
+        if authStatus.rawValue == 3 {
             resolve("limited")
-            return
-        }
-        resolve("denied")
-        return
-    case .limited:
-        resolve("limited")
-        return
-    @unknown default:
-        if containerAccessAvailable() {
-            resolve("limited")
-        } else {
-            resolve("denied")
-        }
-        return
-    }
-}
-
-private func containerAccessAvailable() -> Bool {
-    do {
-        let _ = try contactStore.defaultContainerIdentifier()
-        return true
-    } catch {
-        return false
-    }
-}
-
-@objc
-func requestPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-    contactStore.requestAccess(for: .contacts) { (granted, error) in
-        if let error = error {
-            DispatchQueue.main.async {
-                reject("permission_error", "Error requesting contacts permission: \(error.localizedDescription)", error)
-            }
             return
         }
         
-        DispatchQueue.main.async {
-            let authStatus = CNContactStore.authorizationStatus(for: .contacts)
-            
-            switch authStatus {
-            case .authorized:
-                resolve("granted")
-                
-            case .denied:
+        switch authStatus {
+        case .authorized:
+            resolve("granted")
+            return
+        case .denied:
+            resolve("denied")
+            return
+        case .notDetermined:
+            resolve("undetermined")
+            return
+        case .restricted:
+            if containerAccessAvailable() {
+                resolve("limited")
+                return
+            }
+            resolve("denied")
+            return
+        case .limited:
+            resolve("limited")
+            return
+        @unknown default:
+            if containerAccessAvailable() {
+                resolve("limited")
+            } else {
                 resolve("denied")
-                
-            case .restricted:
-                resolve("denied")
-                
-            case .notDetermined:
-                resolve("undetermined")
-                
-            default:
-                if authStatus.rawValue == 3 {
-                    resolve("limited")
-                    return
+            }
+            return
+        }
+    }
+
+    private func containerAccessAvailable() -> Bool {
+        do {
+            let _ = try contactStore.defaultContainerIdentifier()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    @objc
+    func requestPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        contactStore.requestAccess(for: .contacts) { (granted, error) in
+            if let error = error {
+                DispatchQueue.main.async {
+                    reject("permission_error", "Error requesting contacts permission: \(error.localizedDescription)", error)
                 }
+                return
+            }
+            
+            DispatchQueue.main.async {
+                let authStatus = CNContactStore.authorizationStatus(for: .contacts)
                 
-                if self.containerAccessAvailable() {
-                    resolve("limited")
-                } else {
+                switch authStatus {
+                case .authorized:
+                    resolve("granted")
+                    
+                case .denied:
                     resolve("denied")
+                    
+                case .restricted:
+                    resolve("denied")
+                    
+                case .notDetermined:
+                    resolve("undetermined")
+                    
+                default:
+                    if authStatus.rawValue == 3 {
+                        resolve("limited")
+                        return
+                    }
+                    
+                    if self.containerAccessAvailable() {
+                        resolve("limited")
+                    } else {
+                        resolve("denied")
+                    }
                 }
             }
         }
     }
-}
   
     @objc
     static func requiresMainQueueSetup() -> Bool {
