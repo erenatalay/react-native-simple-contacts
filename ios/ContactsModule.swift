@@ -25,6 +25,7 @@ class ContactsModule: NSObject {
             }
         })
     }
+    
     private func fetchAllContactsAfterPermissionCheck(resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             guard let self = self else {
@@ -34,7 +35,6 @@ class ContactsModule: NSObject {
                 return
             }
             
-            // Sadece ihtiyaç duyulan anahtar bilgileri içeren kısaltılmış liste
             let keysToFetch: [CNKeyDescriptor] = [
                 CNContactIdentifierKey as CNKeyDescriptor,
                 CNContactGivenNameKey as CNKeyDescriptor,
@@ -49,12 +49,10 @@ class ContactsModule: NSObject {
     }
     
     private func fetchAllContacts(keysToFetch: [CNKeyDescriptor], resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
-        let startTime = CFAbsoluteTimeGetCurrent()
-        
         let processingQueue = DispatchQueue(label: "com.simplecontacts.processing", attributes: .concurrent)
         let resultQueue = DispatchQueue(label: "com.simplecontacts.results", attributes: .concurrent)
         
-        let semaphore = DispatchSemaphore(value: 4) // Control level of concurrency
+        let semaphore = DispatchSemaphore(value: 4)
         
         do {
             let request = CNContactFetchRequest(keysToFetch: keysToFetch)
@@ -92,12 +90,6 @@ class ContactsModule: NSObject {
                         }
                     }
                 }
-                
-                if totalContacts % 1000 == 0 {
-                    let progress = totalContacts
-                    DispatchQueue.main.async {
-                    }
-                }
             }
             
             if !contactBuffer.isEmpty {
@@ -117,16 +109,10 @@ class ContactsModule: NSObject {
             
             group.wait()
             
-            let endTime = CFAbsoluteTimeGetCurrent()
-            let duration = endTime - startTime
-            
             DispatchQueue.main.async {
                 resolve(results)
             }
         } catch {
-            let endTime = CFAbsoluteTimeGetCurrent()
-            let duration = endTime - startTime
-            
             DispatchQueue.main.async {
                 reject("fetch_failed", "Failed to fetch contacts: \(error.localizedDescription)", error)
             }
@@ -216,7 +202,6 @@ class ContactsModule: NSObject {
     func checkPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
         let authStatus = CNContactStore.authorizationStatus(for: .contacts)
         
-        
         if authStatus.rawValue == 3 {
             resolve("limited")
             return
@@ -238,9 +223,6 @@ class ContactsModule: NSObject {
                 return
             }
             resolve("denied")
-            return
-        case .limited:
-            resolve("limited")
             return
         @unknown default:
             if containerAccessAvailable() {
@@ -266,7 +248,7 @@ class ContactsModule: NSObject {
         contactStore.requestAccess(for: .contacts) { (granted, error) in
             if let error = error {
                 DispatchQueue.main.async {
-                    reject("permission_error", "Error requesting contacts permission: \(error.localizedDescription)", error)
+                    resolve("denied")
                 }
                 return
             }
@@ -287,7 +269,7 @@ class ContactsModule: NSObject {
                 case .notDetermined:
                     resolve("undetermined")
                     
-                default:
+                @unknown default:
                     if authStatus.rawValue == 3 {
                         resolve("limited")
                         return
