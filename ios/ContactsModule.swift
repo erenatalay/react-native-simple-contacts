@@ -10,9 +10,7 @@ class ContactsModule: NSObject {
     @objc
     func getContacts(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
         checkPermission({ (permissionStatus) in
-            if permissionStatus as? String == "granted" {
-                self.fetchAllContactsAfterPermissionCheck(resolve: resolve, reject: reject)
-            } else if permissionStatus as? String == "limited" {
+            if permissionStatus as? String == "granted" || permissionStatus as? String == "limited" {
                 self.fetchAllContactsAfterPermissionCheck(resolve: resolve, reject: reject)
             } else {
                 DispatchQueue.main.async {
@@ -35,87 +33,167 @@ class ContactsModule: NSObject {
                 return
             }
             
-            let keysToFetch: [CNKeyDescriptor] = [
-                CNContactIdentifierKey as CNKeyDescriptor,
-                CNContactGivenNameKey as CNKeyDescriptor,
-                CNContactFamilyNameKey as CNKeyDescriptor,
-                CNContactPhoneNumbersKey as CNKeyDescriptor,
-                CNContactEmailAddressesKey as CNKeyDescriptor,
-                CNContactOrganizationNameKey as CNKeyDescriptor
-            ]
-            
-            self.fetchAllContacts(keysToFetch: keysToFetch, resolve: resolve, reject: reject)
+            autoreleasepool {
+                let keysToFetch: [CNKeyDescriptor] = [
+                    CNContactIdentifierKey as CNKeyDescriptor,
+                    CNContactGivenNameKey as CNKeyDescriptor,
+                    CNContactFamilyNameKey as CNKeyDescriptor,
+                    CNContactPhoneNumbersKey as CNKeyDescriptor,
+                    CNContactEmailAddressesKey as CNKeyDescriptor,
+                    CNContactOrganizationNameKey as CNKeyDescriptor
+                ]
+                
+                self.fetchAllContacts(keysToFetch: keysToFetch, resolve: resolve, reject: reject)
+            }
         }
     }
     
     private func fetchAllContacts(keysToFetch: [CNKeyDescriptor], resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+        // Create a concurrent processing queue for parallel contact processing
         let processingQueue = DispatchQueue(label: "com.simplecontacts.processing", attributes: .concurrent)
-        let resultQueue = DispatchQueue(label: "com.simplecontacts.results", attributes: .concurrent)
-        
-        let semaphore = DispatchSemaphore(value: 4)
+        // Sequential result queue to prevent race conditions when appending results
+        let resultQueue = DispatchQueue(label: "com.simplecontacts.results", qos: .default)
+        // Semaphore limits concurrent operations to prevent excessive resource consumption
+        // Value of 2 means at most 2 batch processing operations can run concurrently
+        let semaphore = DispatchSemaphore(value: 2)
+        @discardableResult
+        func safeReject(_ message: String, error: Error? = nil) -> Bool {
+            DispatchQueue.main.async {
+                reject("fetch_failed", message, error)
+            }
+            return false
+        }
         
         do {
             let request = CNContactFetchRequest(keysToFetch: keysToFetch)
-            
             request.sortOrder = .givenName
-            
-            let batchSize = 200 
+            // Process contacts in batches to optimize memory usage
+            let batchSize = 50
             var results = [[String: Any]]()
             var totalContacts = 0
             
+            // DispatchGroup ensures we wait for all batches to complete before returning results
             let group = DispatchGroup()
-            
             var contactBuffer = [CNContact]()
             
-            results.reserveCapacity(1000)
+            // Start with a reasonable initial capacity to avoid frequent reallocations
+            // The array will dynamically grow as needed
+            let initialCapacity = 100
+            results.reserveCapacity(initialCapacity)
             
             try self.contactStore.enumerateContacts(with: request) { (contact, stopPointer) in
-                contactBuffer.append(contact)
-                totalContacts += 1
-                
-                if contactBuffer.count >= batchSize {
-                    let contactBatch = contactBuffer
-                    contactBuffer.removeAll(keepingCapacity: true)
+                do {
+                    // Add contact to buffer for batch processing
+                    contactBuffer.append(contact)
+                    totalContacts += 1
                     
-                    group.enter()
-                    semaphore.wait() 
-                    
-                    processingQueue.async {
-                        let processedBatch = self.processContactBatch(contacts: contactBatch)
+                    if contactBuffer.count >= batchSize {
+                        // When buffer reaches batch size, process the batch
+                        let contactBatch = contactBuffer
+                        contactBuffer.removeAll(keepingCapacity: true)
                         
-                        resultQueue.async {
-                            results.append(contentsOf: processedBatch)
-                            semaphore.signal() 
-                            group.leave()
+                        // Enter the group before async processing
+                        group.enter()
+                        // Wait on semaphore to limit concurrent operations
+                        semaphore.wait()
+                        
+                        processingQueue.async {
+                            // Use autoreleasepool to release memory for each batch
+                            autoreleasepool {
+                                do {
+                                    // Convert contacts to lightweight dictionaries
+                                    let processedBatch = self.processContactBatchLight(contacts: contactBatch)
+                                    
+                                    resultQueue.async {
+                                        // Add processed contacts to results array
+                                        results.append(contentsOf: processedBatch)
+                                        
+                                        // Dynamic capacity management:
+                                        // If total contacts exceed current capacity, increase it
+                                        // using exponential growth strategy (2x) or direct sizing
+                                        if totalContacts > results.capacity {
+                                            let newCapacity = max(results.capacity * 2, totalContacts + batchSize)
+                                            results.reserveCapacity(newCapacity)
+                                        }
+                                        
+                                        // Signal semaphore to allow another batch to be processed
+                                        semaphore.signal()
+                                        // Leave the group for this batch
+                                        group.leave()
+                                    }
+                                } catch {
+                                    // Release semaphore and group in case of error
+                                    semaphore.signal()
+                                    group.leave()
+                                    _ = safeReject("Error processing contact batch: \(error.localizedDescription)", error: error)
+                                }
+                            }
+                        }
+                        
+                        // Cancel previous memory-intensive operations periodically
+                        if totalContacts % 50 == 0 {
+                            autoreleasepool {
+                                NSObject.cancelPreviousPerformRequests(withTarget: self)
+                            }
                         }
                     }
+                } catch {
+                    stopPointer.pointee = true
+                    _ = safeReject("Error processing contact: \(error.localizedDescription)", error: error)
                 }
             }
             
+            // Process any remaining contacts in the buffer
             if !contactBuffer.isEmpty {
                 group.enter()
                 semaphore.wait()
                 
                 processingQueue.async {
-                    let processedBatch = self.processContactBatch(contacts: contactBuffer)
-                    
-                    resultQueue.async {
-                        results.append(contentsOf: processedBatch)
-                        semaphore.signal()
-                        group.leave()
+                    autoreleasepool {
+                        do {
+                            let processedBatch = self.processContactBatchLight(contacts: contactBuffer)
+                            resultQueue.async {
+                                results.append(contentsOf: processedBatch)
+                                
+                                // Dynamic capacity management for final batch
+                                if totalContacts > results.capacity {
+                                    let newCapacity = max(results.capacity * 2, totalContacts + batchSize)
+                                    results.reserveCapacity(newCapacity)
+                                }
+                                
+                                semaphore.signal()
+                                group.leave()
+                            }
+                        } catch {
+                            semaphore.signal()
+                            group.leave()
+                            _ = safeReject("Error processing final contact batch: \(error.localizedDescription)", error: error)
+                        }
                     }
                 }
             }
             
+            // Wait for all async operations to complete
             group.wait()
             
+            // Copy results in a thread-safe manner to prevent race conditions
+            var finalResults = [[String: Any]]()
+            resultQueue.sync {
+                finalResults = results
+            }
+            
+            // Return results on the main thread as required by React Native
             DispatchQueue.main.async {
-                resolve(results)
+                if Thread.isMainThread {
+                    resolve(finalResults)
+                } else {
+                    DispatchQueue.main.async {
+                        resolve(finalResults)
+                    }
+                }
             }
         } catch {
-            DispatchQueue.main.async {
-                reject("fetch_failed", "Failed to fetch contacts: \(error.localizedDescription)", error)
-            }
+            _ = safeReject("Failed to fetch contacts: \(error.localizedDescription)", error: error)
         }
     }
 
@@ -127,41 +205,58 @@ class ContactsModule: NSObject {
             let contactDict = self.contactToDict(contact: contact)
             results.append(contactDict)
         }
+        return results
+    }
         
+    private func processContactBatchLight(contacts: [CNContact]) -> [[String: Any]] {
+        var results = [[String: Any]]()
+        results.reserveCapacity(contacts.count)
+        
+        for contact in contacts {
+            autoreleasepool {
+                if let contactDict = self.contactToLightDictSafe(contact: contact) {
+                    results.append(contactDict)
+                }
+            }
+        }
         return results
     }
     
-    private func contactToLightDict(contact: CNContact) -> [String: Any] {
-        var result: [String: Any] = [
-            "recordID": contact.identifier,
-            "givenName": contact.givenName,
-            "familyName": contact.familyName
-        ]
+    private func contactToLightDictSafe(contact: CNContact) -> [String: Any]? {
+        var result: [String: Any] = [:]
+        
+        result["recordID"] = contact.identifier
+        result["givenName"] = contact.givenName
+        result["familyName"] = contact.familyName
         
         let fullName = [contact.givenName, contact.familyName].filter { !$0.isEmpty }.joined(separator: " ")
         result["displayName"] = fullName.isEmpty ? "No Name" : fullName
         
-        if let firstPhone = contact.phoneNumbers.first {
-            result["phoneNumbers"] = [[
-                "label": CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: firstPhone.label ?? ""),
-                "number": firstPhone.value.stringValue
-            ]]
-        } else {
-            result["phoneNumbers"] = []
+        var phoneNumbers: [[String: String]] = []
+        if !contact.phoneNumbers.isEmpty {
+            let firstPhone = contact.phoneNumbers[0]
+            let label = CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: firstPhone.label ?? "")
+            let number = firstPhone.value.stringValue
+            phoneNumbers.append(["label": label, "number": number])
         }
+        result["phoneNumbers"] = phoneNumbers
         
-        if let firstEmail = contact.emailAddresses.first {
-            result["emailAddresses"] = [[
-                "label": firstEmail.label != nil ? CNLabeledValue<NSString>.localizedString(forLabel: firstEmail.label!) : "other",
-                "email": firstEmail.value as String
-            ]]
-        } else {
-            result["emailAddresses"] = []
+        var emailAddresses: [[String: String]] = []
+        if !contact.emailAddresses.isEmpty {
+            let firstEmail = contact.emailAddresses[0]
+            let label = firstEmail.label != nil ? CNLabeledValue<NSString>.localizedString(forLabel: firstEmail.label!) : "other"
+            let email = firstEmail.value as String
+            emailAddresses.append(["label": label, "email": email])
         }
+        result["emailAddresses"] = emailAddresses
         
         return result
     }
 
+    private func contactToLightDict(contact: CNContact) -> [String: Any] {
+        return contactToLightDictSafe(contact: contact) ?? [:]
+    }
+    
     private func contactToDict(contact: CNContact) -> [String: Any] {
         var result = [String: Any]()
         
@@ -179,8 +274,9 @@ class ContactsModule: NSObject {
         
         var phoneNumbers = [[String: String]]()
         for phone in contact.phoneNumbers {
+            let label = phone.label != nil ? CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: phone.label!) : "other"
             phoneNumbers.append([
-                "label": CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: phone.label ?? ""),
+                "label": label,
                 "number": phone.value.stringValue
             ])
         }
@@ -188,8 +284,9 @@ class ContactsModule: NSObject {
         
         var emailAddresses = [[String: String]]()
         for email in contact.emailAddresses {
+            let label = email.label != nil ? CNLabeledValue<NSString>.localizedString(forLabel: email.label!) : "other"
             emailAddresses.append([
-                "label": email.label != nil ? CNLabeledValue<NSString>.localizedString(forLabel: email.label!) : "other",
+                "label": label,
                 "email": email.value as String
             ])
         }
@@ -202,9 +299,11 @@ class ContactsModule: NSObject {
     func checkPermission(_ resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
         let authStatus = CNContactStore.authorizationStatus(for: .contacts)
         
-        if authStatus.rawValue == 3 {
-            resolve("limited")
-            return
+        if #available(iOS 18.0, *) {
+            if authStatus.rawValue == 3 {
+                resolve("limited")
+                return
+            }
         }
         
         switch authStatus {
@@ -225,7 +324,14 @@ class ContactsModule: NSObject {
             resolve("denied")
             return
         @unknown default:
-            if containerAccessAvailable() {
+            if #available(iOS 18.0, *) {
+                if authStatus.rawValue == 3 {
+                    resolve("limited")
+                    return
+                }
+            }
+            
+            if self.containerAccessAvailable() {
                 resolve("limited")
             } else {
                 resolve("denied")
@@ -270,9 +376,11 @@ class ContactsModule: NSObject {
                     resolve("undetermined")
                     
                 @unknown default:
-                    if authStatus.rawValue == 3 {
-                        resolve("limited")
-                        return
+                    if #available(iOS 18.0, *) {
+                        if authStatus.rawValue == 3 {
+                            resolve("limited")
+                            return
+                        }
                     }
                     
                     if self.containerAccessAvailable() {
