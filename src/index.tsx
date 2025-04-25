@@ -38,7 +38,6 @@ export const checkPermission = async (): Promise<ContactsPermissionStatus> => {
 export const getContacts = async () => {
   const permissionStatus = await checkPermission();
 
-  // İzin "granted" veya "limited" ise kişileri getir
   if (
     permissionStatus === ContactsPermission.granted ||
     permissionStatus === ContactsPermission.limited
