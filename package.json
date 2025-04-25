@@ -1,6 +1,6 @@
 {
   "name": "react-native-simple-contact",
-  "version": "1.3.6",
+  "version": "1.3.7",
   "description": "react native simple contacts library",
   "main": "lib/commonjs/index",
   "module": "lib/module/index",
