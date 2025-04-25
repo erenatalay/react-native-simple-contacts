@@ -55,257 +55,78 @@ class ContactsModule(reactContext: ReactApplicationContext) : ReactContextBaseJa
     private fun fetchContactsOptimized(promise: Promise) {
         val startTime = System.currentTimeMillis()
         
-        val contentResolver: ContentResolver = reactContext.contentResolver
-        val contacts: WritableArray = Arguments.createArray()
-        
-        try {
-            val uri = ContactsContract.Contacts.CONTENT_URI
-            val projection = arrayOf(
-                ContactsContract.Contacts._ID,
-                ContactsContract.Contacts.LOOKUP_KEY,
-                ContactsContract.Contacts.DISPLAY_NAME_PRIMARY,
-                ContactsContract.Contacts.PHOTO_URI,
-                ContactsContract.Contacts.PHOTO_THUMBNAIL_URI,
-                ContactsContract.Contacts.STARRED,
-                ContactsContract.Contacts.HAS_PHONE_NUMBER
-            )
-            
-            var cursor: Cursor? = null
-            val contactsMap = mutableMapOf<String, WritableMap>()
-            
+        executor.execute {
             try {
-                val selection = "${ContactsContract.Contacts.HAS_PHONE_NUMBER} = 1"
-                cursor = contentResolver.query(
-                    uri,
-                    projection,
-                    selection,
-                    null,
-                    "${ContactsContract.Contacts.SORT_KEY_PRIMARY} ASC"
+                val contentResolver: ContentResolver = reactContext.contentResolver
+                val contacts: WritableArray = Arguments.createArray()
+                
+                val projection = arrayOf(
+                    ContactsContract.Contacts._ID,
+                    ContactsContract.Contacts.LOOKUP_KEY,
+                    ContactsContract.Contacts.DISPLAY_NAME_PRIMARY,
+                    ContactsContract.Contacts.PHOTO_URI,
+                    ContactsContract.Contacts.PHOTO_THUMBNAIL_URI,
+                    ContactsContract.Contacts.STARRED
                 )
                 
-                cursor?.let {
-                    val totalContacts = it.count
-                    Log.d(TAG, "Toplam $totalContacts kişi bulundu")
-                    var processedCount = 0
+                val contactsUri = ContactsContract.Contacts.CONTENT_URI
+                var cursor: Cursor? = null
                 
-                    while (it.moveToNext()) {
-                        val contactId = it.getString(it.getColumnIndexOrThrow(ContactsContract.Contacts._ID))
-                        val contact = createBasicContactMap(it)
-                        contactsMap[contactId] = contact
-                        processedCount++
+                try {
+                    cursor = contentResolver.query(
+                        contactsUri,
+                        projection,
+                        "${ContactsContract.Contacts.HAS_PHONE_NUMBER} = 1",
+                        null,
+                        "${ContactsContract.Contacts.SORT_KEY_PRIMARY} ASC"
+                    )
                 
-                        if (processedCount % (BATCH_SIZE/5) == 0) {
-                            Log.d(TAG, "$processedCount/$totalContacts kişi işlendi")
+                    if (cursor != null) {
+                        val totalContacts = cursor.count
+                        Log.d(TAG, "Toplam $totalContacts kişi bulundu")
+                            
+                        val contactsMap = mutableMapOf<String, WritableMap>()
+                        var processedCount = 0
+                        
+                        while (cursor.moveToNext()) {
+                            val contactId = cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts._ID))
+                            val contact = createBasicContactMap(cursor)
+                            contactsMap[contactId] = contact
+                            
+                            processedCount++
+                            
+                            if (processedCount % BATCH_SIZE == 0) {
+                                Log.d(TAG, "$processedCount/$totalContacts kişi işlendi")
+                            }
+                        }
+                        
+                        enrichContactDetails(contactsMap, contentResolver)
+                        
+                        for (contact in contactsMap.values) {
+                            contacts.pushMap(contact)
+                        }
+                        
+                        val endTime = System.currentTimeMillis()
+                        val duration = (endTime - startTime) / 1000.0
+                        Log.d(TAG, "Rehber çekme tamamlandı: ${contacts.size()} kişi, $duration saniye sürdü")
+                        
+                        reactContext.runOnUiQueueThread {
+                            promise.resolve(contacts)
+                        }
+                    } else {
+                        reactContext.runOnUiQueueThread {
+                            promise.reject("cursor_error", "Cursor is null")
                         }
                     }
-                            
-                    val batchSize = 200 
-                    val contactIds = contactsMap.keys.toList()
-                        
-                    contactIds.chunked(batchSize).forEach { batch ->
-                        fetchStructuredNamesOptimized(batch, contactsMap, contentResolver)
-                        fetchPhoneNumbersOptimized(batch, contactsMap, contentResolver)
-                        fetchEmailsOptimized(batch, contactsMap, contentResolver)
-                    }
-                            
-
-                    for (contact in contactsMap.values) {
-                        contacts.pushMap(contact)
-                    }
-                            
-                    val endTime = System.currentTimeMillis()
-                    val duration = (endTime - startTime) / 1000.0
-                    Log.d(TAG, "Rehber çekme tamamlandı: ${contacts.size()} kişi, $duration saniye sürdü")
-                        
-
-                    promise.resolve(contacts)
-                } ?: run {
-                    promise.reject("cursor_error", "Cursor is null")
+                } finally {
+                    cursor?.close()
                 }
-            } finally {
-                cursor?.close()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Rehber çekme hatası: ${e.message}", e)
-            promise.reject("fetch_error", "Could not fetch contacts: ${e.message}")
-        }
-    }
-
-    private fun fetchStructuredNamesOptimized(contactIds: List<String>, contactsMap: MutableMap<String, WritableMap>, contentResolver: ContentResolver) {
-        if (contactIds.isEmpty()) return
-                        
-        val selection = "${ContactsContract.Data.MIMETYPE} = ? AND ${ContactsContract.Data.CONTACT_ID} IN (${contactIds.joinToString(",")})"
-        val selectionArgs = arrayOf(CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE)
-                        
-        var cursor: Cursor? = null
-        try {
-            cursor = contentResolver.query(
-                ContactsContract.Data.CONTENT_URI,
-                arrayOf(
-                    ContactsContract.Data.CONTACT_ID,
-                    CommonDataKinds.StructuredName.FAMILY_NAME,
-                    CommonDataKinds.StructuredName.GIVEN_NAME,
-                    CommonDataKinds.StructuredName.MIDDLE_NAME,
-                    CommonDataKinds.StructuredName.PREFIX,
-                    CommonDataKinds.StructuredName.SUFFIX
-                ),
-                selection,
-                selectionArgs,
-                null
-            )
-            
-            cursor?.let {
-                val contactIdIndex = it.getColumnIndexOrThrow(ContactsContract.Data.CONTACT_ID)
-                val familyNameIndex = it.getColumnIndexOrThrow(CommonDataKinds.StructuredName.FAMILY_NAME)
-                val givenNameIndex = it.getColumnIndexOrThrow(CommonDataKinds.StructuredName.GIVEN_NAME)
-                val middleNameIndex = it.getColumnIndexOrThrow(CommonDataKinds.StructuredName.MIDDLE_NAME)
-                val prefixIndex = it.getColumnIndexOrThrow(CommonDataKinds.StructuredName.PREFIX)
-                val suffixIndex = it.getColumnIndexOrThrow(CommonDataKinds.StructuredName.SUFFIX)
-                
-                while (it.moveToNext()) {
-                    val contactId = it.getString(contactIdIndex)
-                    val contact = contactsMap[contactId] ?: continue
-                    
-                    contact.putString("familyName", it.getString(familyNameIndex) ?: "")
-                    contact.putString("givenName", it.getString(givenNameIndex) ?: "")
-                    contact.putString("middleName", it.getString(middleNameIndex) ?: "")
-                    contact.putString("prefix", it.getString(prefixIndex) ?: "")
-                    contact.putString("suffix", it.getString(suffixIndex) ?: "")
+            } catch (e: Exception) {
+                Log.e(TAG, "Rehber çekme hatası: ${e.message}", e)
+                reactContext.runOnUiQueueThread {
+                    promise.reject("fetch_error", "Could not fetch contacts: ${e.message}")
                 }
             }
-        } finally {
-            cursor?.close()
-        }
-
-    private fun fetchPhoneNumbersOptimized(contactIds: List<String>, contactsMap: MutableMap<String, WritableMap>, contentResolver: ContentResolver) {
-        if (contactIds.isEmpty()) return
-        
-
-        val inClause = contactIds.joinToString(",")
-        val selection = "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID} IN ($inClause)"
-        
-        var cursor: Cursor? = null
-        try {
-            cursor = contentResolver.query(
-                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                arrayOf(
-                    ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
-                    ContactsContract.CommonDataKinds.Phone.NUMBER,
-                    ContactsContract.CommonDataKinds.Phone.TYPE
-                ),
-                selection,
-                null,
-                null
-            )
-            
-            cursor?.let {
-                val contactIdIndex = it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
-                val numberIndex = it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
-                val typeIndex = it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.TYPE)
-      
-                val phoneNumbersMap = mutableMapOf<String, MutableList<Pair<String, String>>>()
-                
-                while (it.moveToNext()) {
-                    val contactId = it.getString(contactIdIndex)
-                    val number = it.getString(numberIndex) ?: ""
-                    val type = it.getInt(typeIndex)
-                    
-                    val label = when (type) {
-                        CommonDataKinds.Phone.TYPE_HOME -> "home"
-                        CommonDataKinds.Phone.TYPE_WORK -> "work"
-                        CommonDataKinds.Phone.TYPE_MOBILE -> "mobile"
-                        else -> "other"
-                    }
-                    
-                    if (!phoneNumbersMap.containsKey(contactId)) {
-                        phoneNumbersMap[contactId] = mutableListOf()
-                    }
-                    phoneNumbersMap[contactId]?.add(Pair(label, number))
-                }
-                
-        
-                for ((contactId, phones) in phoneNumbersMap) {
-                    val contact = contactsMap[contactId] ?: continue
-                    val phoneNumbers = Arguments.createArray()
-                    
-                    for ((label, number) in phones) {
-                        val phoneNumber = Arguments.createMap()
-                        phoneNumber.putString("label", label)
-                        phoneNumber.putString("number", number)
-                        phoneNumbers.pushMap(phoneNumber)
-                    }
-                    
-                    contact.putArray("phoneNumbers", phoneNumbers)
-                }
-            }
-        } finally {
-            cursor?.close()
-        }
-    }
-    
-
-    private fun fetchEmailsOptimized(contactIds: List<String>, contactsMap: MutableMap<String, WritableMap>, contentResolver: ContentResolver) {
-        if (contactIds.isEmpty()) return
-                    
-
-        val inClause = contactIds.joinToString(",")
-        val selection = "${ContactsContract.CommonDataKinds.Email.CONTACT_ID} IN ($inClause)"
-        
-        var cursor: Cursor? = null
-        try {
-            cursor = contentResolver.query(
-                ContactsContract.CommonDataKinds.Email.CONTENT_URI,
-                arrayOf(
-                    ContactsContract.CommonDataKinds.Email.CONTACT_ID,
-                    ContactsContract.CommonDataKinds.Email.ADDRESS,
-                    ContactsContract.CommonDataKinds.Email.TYPE
-                ),
-                selection,
-                null,
-                null
-            )
-            
-            cursor?.let {
-                val contactIdIndex = it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.CONTACT_ID)
-                val addressIndex = it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.ADDRESS)
-                val typeIndex = it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.TYPE)
-                
-
-                val emailMap = mutableMapOf<String, MutableList<Pair<String, String>>>()
-                
-                while (it.moveToNext()) {
-                    val contactId = it.getString(contactIdIndex)
-                    val email = it.getString(addressIndex) ?: ""
-                    val type = it.getInt(typeIndex)
-                    
-                    val label = when (type) {
-                        CommonDataKinds.Email.TYPE_HOME -> "home"
-                        CommonDataKinds.Email.TYPE_WORK -> "work"
-                        else -> "other"
-                    }
-                    
-                    if (!emailMap.containsKey(contactId)) {
-                        emailMap[contactId] = mutableListOf()
-                    }
-                    emailMap[contactId]?.add(Pair(label, email))
-                }
-                
-                for ((contactId, emails) in emailMap) {
-                    val contact = contactsMap[contactId] ?: continue
-                    val emailAddresses = Arguments.createArray()
-                    
-                    for ((label, email) in emails) {
-                        val emailAddress = Arguments.createMap()
-                        emailAddress.putString("label", label)
-                        emailAddress.putString("email", email)
-                        emailAddresses.pushMap(emailAddress)
-                    }
-                    
-                    contact.putArray("emailAddresses", emailAddresses)
-                }
-            }
-        } finally {
-            cursor?.close()
         }
     }
                 
